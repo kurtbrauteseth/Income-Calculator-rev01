@@ -156,11 +156,11 @@ def render_person_block(person_key: str, title: str) -> None:
     with st.container(border=True):
         st.markdown(f"**{title}**")
 
-        # Row 1: Salary + includes SG toggle
+        # Row 1: Salary + includes SG toggle (consistent unit labels)
         r1c1, r1c2 = st.columns([1.3, 1.0])
         with r1c1:
             p["base_salary_annual"] = money_input(
-                "Base salary (annual, $)",
+                "Base salary ($/year)",
                 key=f"{person_key}_base_salary",
                 value=p.get("base_salary_annual", 0.0),
                 step=2000.0,
@@ -172,26 +172,33 @@ def render_person_block(person_key: str, title: str) -> None:
                 key=f"{person_key}_includes_sg",
             )
 
-        # Row 2: uplift % on right, weeks next to it, uplift metric on left
+        # Row 2: uplift inputs on the left, calculated uplift on the right
+        r2_left, r2_right = st.columns([2.0, 1.0])
+        with r2_left:
+            c_weeks, c_pct = st.columns([1.0, 1.0])
+            with c_weeks:
+                p["weeks_away"] = int_input(
+                    "Weeks",
+                    key=f"{person_key}_weeks_away",
+                    value=int(p.get("weeks_away", 0)),
+                    min_value=0,
+                    max_value=52,
+                )
+            with c_pct:
+                p["uplift_pct"] = pct_input(
+                    "Remote uplift (%)",
+                    key=f"{person_key}_uplift_pct",
+                    value=float(p.get("uplift_pct", 0.0)),
+                    max_value=200.0,
+                )
+
         uplift_annual = calc_uplift_annual(p["base_salary_annual"], p["uplift_pct"], p["weeks_away"])
-        r2c1, r2c2, r2c3 = st.columns([1.2, 1.0, 1.0])
-        with r2c1:
-            st.metric("Uplift (annual)", f"${uplift_annual:,.0f}")
-        with r2c2:
-            p["weeks_away"] = int_input(
-                "Weeks working away",
-                key=f"{person_key}_weeks_away",
-                value=int(p.get("weeks_away", 0)),
-                min_value=0,
-                max_value=52,
-            )
-        with r2c3:
-            p["uplift_pct"] = pct_input(
-                "Remote uplift (%)",
-                key=f"{person_key}_uplift_pct",
-                value=float(p.get("uplift_pct", 0.0)),
-                max_value=200.0,
-            )
+        with r2_right:
+            st.metric("Uplift ($/year)", f"${uplift_annual:,.0f}")
+
+        # Row 2.5: show combined income (base + uplift)
+        combined_income = float(p["base_salary_annual"]) + float(uplift_annual)
+        st.metric("Combined income ($/year)", f"${combined_income:,.0f}")
 
         # Row 3: SG + toggle
         sg_annual = calc_sg_annual(
@@ -203,7 +210,7 @@ def render_person_block(person_key: str, title: str) -> None:
 
         r3c1, r3c2, r3c3 = st.columns([1.0, 1.0, 1.0])
         with r3c1:
-            st.metric("SG (12%, annual)", f"${sg_annual:,.0f}")
+            st.metric("SG (12%, $/year)", f"${sg_annual:,.0f}")
         with r3c2:
             p["uplift_sg_applies"] = st.toggle(
                 "SG applies to uplift",
@@ -213,18 +220,18 @@ def render_person_block(person_key: str, title: str) -> None:
         with r3c3:
             st.write("")
 
-        # Row 4: Concessional + RFB
+        # Row 4: Concessional + RFB (consistent unit labels)
         r4c1, r4c2 = st.columns([1.0, 1.0])
         with r4c1:
             p["extra_concessional_annual"] = money_input(
-                "Extra concessional contributions (annual, $)",
+                "Extra concessional contributions ($/year)",
                 key=f"{person_key}_extra_concessional",
                 value=p.get("extra_concessional_annual", 0.0),
                 step=500.0,
             )
         with r4c2:
             p["reportable_fringe_benefits_annual"] = money_input(
-                "Reportable fringe benefits (annual, $)",
+                "Reportable fringe benefits ($/year)",
                 key=f"{person_key}_rfb",
                 value=p.get("reportable_fringe_benefits_annual", 0.0),
                 step=500.0,
@@ -243,7 +250,6 @@ _ensure_state()
 with st.sidebar:
     st.subheader("Scenarios")
 
-    # Use a form so we can clear the input cleanly (avoids Streamlit session_state widget mutation errors)
     with st.form("add_scenario_form", clear_on_submit=True):
         new_name = st.text_input("Scenario name", value="", placeholder="e.g., Baseline", key="new_scenario_name")
         submitted = st.form_submit_button("Add scenario", use_container_width=True)
@@ -341,7 +347,6 @@ with st.expander("Income", expanded=True):
 
 # Investments
 with st.expander("Investments", expanded=True):
-    # Use a form so the investment name clears cleanly without mutating widget session state post-creation
     with st.form("add_investment_form", clear_on_submit=True):
         add1, add2, add3 = st.columns([1.2, 1.8, 0.8])
         with add1:
@@ -431,14 +436,14 @@ with st.expander("Investments", expanded=True):
                         )
                     with r3:
                         inv["interest_deductible_annual"] = money_input(
-                            "Interest (annual, $)",
+                            "Interest ($/year)",
                             key=f"{inv_key}_int",
                             value=float(inv.get("interest_deductible_annual", 0.0)),
                             step=200.0,
                         )
                     with r4:
                         inv["other_deductible_annual"] = money_input(
-                            "Other deductible (annual, $)",
+                            "Other deductible ($/year)",
                             key=f"{inv_key}_other",
                             value=float(inv.get("other_deductible_annual", 0.0)),
                             step=200.0,
@@ -451,7 +456,7 @@ with st.expander("Investments", expanded=True):
                     r1, r2 = st.columns([1.0, 1.0])
                     with r1:
                         inv["gross_income_annual"] = money_input(
-                            "Interest income (annual, $)",
+                            "Interest income ($/year)",
                             key=f"{inv_key}_gross",
                             value=float(inv.get("gross_income_annual", 0.0)),
                             step=100.0,
@@ -465,21 +470,21 @@ with st.expander("Investments", expanded=True):
                     r1, r2, r3 = st.columns([1.2, 1.0, 1.0])
                     with r1:
                         inv["gross_income_annual"] = money_input(
-                            "Gross income (annual, $)",
+                            "Gross income ($/year)",
                             key=f"{inv_key}_gross",
                             value=float(inv.get("gross_income_annual", 0.0)),
                             step=200.0,
                         )
                     with r2:
                         inv["interest_deductible_annual"] = money_input(
-                            "Deductible interest (annual, $)",
+                            "Deductible interest ($/year)",
                             key=f"{inv_key}_int2",
                             value=float(inv.get("interest_deductible_annual", 0.0)),
                             step=200.0,
                         )
                     with r3:
                         inv["other_deductible_annual"] = money_input(
-                            "Other deductible (annual, $)",
+                            "Other deductible ($/year)",
                             key=f"{inv_key}_other2",
                             value=float(inv.get("other_deductible_annual", 0.0)),
                             step=200.0,
