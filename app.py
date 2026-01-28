@@ -857,7 +857,7 @@ with tab_calc:
         pa_taxable_income, pb_taxable_income
     )
 
-    # Total tax (as requested previously): income tax + Medicare levy + Div293 (EXCLUDES super contributions tax)
+    # Total tax (income tax + Medicare levy + Div293) — EXCLUDES super contributions tax
     pa_total_tax = pa_income_tax + pa_medicare + pa_div293
     pb_total_tax = (pb_income_tax + pb_medicare + pb_div293) if is_couple else 0.0
 
@@ -897,7 +897,7 @@ with tab_calc:
     pa_after_tax_income = max(0.0, pa_total_salary - pa_total_tax)
     pb_after_tax_income = max(0.0, pb_total_salary - pb_total_tax) if is_couple else 0.0
 
-    # Household Pay definition per request:
+    # Household Pay definition:
     # Pay = Person A after-tax income + Person B after-tax income + gross investment income ("cash in")
     household_pay = pa_after_tax_income + pb_after_tax_income + splits["gross_total"]
 
@@ -1012,17 +1012,15 @@ with tab_household:
     pay_annual = household_pay
     pay_monthly = household_pay / 12.0
 
-    # Professional layout: grouped KPI blocks (metrics unchanged)
+    # Professional layout: grouped KPI blocks
     with st.container(border=True):
         st.markdown("### Earnings & super")
-        line1 = st.columns(4, gap="large")
+        line1 = st.columns(3, gap="large")
         with line1[0]:
             st.metric("Total salaries", _fmt_money(household_total_salary))
         with line1[1]:
             st.metric("After-tax income", _fmt_money(household_after_tax_income))
         with line1[2]:
-            st.metric("Pay", _fmt_money(household_pay))
-        with line1[3]:
             st.metric("Total super", _fmt_money(household_super_total))
 
     with st.container(border=True):
