@@ -25,7 +25,6 @@ def _ensure_state() -> None:
             "tax_year_label": "2025–26",
             "is_couple": True,
             "dependant_children": 0,
-            # Minimal MLS inputs (compact)
             "private_hospital_cover_couple": False,
         }
 
@@ -52,11 +51,11 @@ def _ensure_state() -> None:
         }
 
     if "investments" not in st.session_state:
-        st.session_state.investments = []  # list of dicts
+        st.session_state.investments = []
 
-    # Scenarios: stored snapshots (name -> payload)
     if "scenarios" not in st.session_state:
         st.session_state.scenarios = {}
+
     if "active_scenario" not in st.session_state:
         st.session_state.active_scenario = None
 
@@ -96,7 +95,6 @@ def calc_sg_annual(
     Inputs-only SG estimate:
     - OTE assumed = base salary (and optionally uplift).
     - If salary includes SG (package), we back out OTE: OTE ≈ package / (1 + SG_RATE).
-      (We can change this convention later if you want a different meaning.)
     """
     base = float(base_salary_annual)
 
@@ -158,7 +156,7 @@ def render_person_block(person_key: str, title: str) -> None:
     with st.container(border=True):
         st.markdown(f"**{title}**")
 
-        # Row 1: Salary and package toggle
+        # Row 1: Salary + includes SG toggle
         r1c1, r1c2 = st.columns([1.3, 1.0])
         with r1c1:
             p["base_salary_annual"] = money_input(
@@ -174,7 +172,7 @@ def render_person_block(person_key: str, title: str) -> None:
                 key=f"{person_key}_includes_sg",
             )
 
-        # Row 2: Derived uplift on left, weeks next to uplift %, uplift % to the right
+        # Row 2: uplift % on right, weeks next to it, uplift metric on left
         uplift_annual = calc_uplift_annual(p["base_salary_annual"], p["uplift_pct"], p["weeks_away"])
         r2c1, r2c2, r2c3 = st.columns([1.2, 1.0, 1.0])
         with r2c1:
@@ -245,26 +243,26 @@ _ensure_state()
 with st.sidebar:
     st.subheader("Scenarios")
 
-    st.text_input("Scenario name", value="", placeholder="e.g., Baseline", key="new_scenario_name")
-    if st.button("Add scenario", use_container_width=True):
-        name = (st.session_state.get("new_scenario_name") or "").strip()
-        if not name:
-            st.warning("Enter a scenario name.")
-        else:
-            st.session_state.scenarios[name] = _snapshot()
-            st.session_state.active_scenario = name
-            st.session_state.new_scenario_name = ""
-            st.rerun()
+    # Use a form so we can clear the input cleanly (avoids Streamlit session_state widget mutation errors)
+    with st.form("add_scenario_form", clear_on_submit=True):
+        new_name = st.text_input("Scenario name", value="", placeholder="e.g., Baseline", key="new_scenario_name")
+        submitted = st.form_submit_button("Add scenario", use_container_width=True)
+        if submitted:
+            name = (new_name or "").strip()
+            if not name:
+                st.warning("Enter a scenario name.")
+            else:
+                st.session_state.scenarios[name] = _snapshot()
+                st.session_state.active_scenario = name
+                st.rerun()
 
     if st.session_state.scenarios:
         st.markdown("**Your scenarios**")
-
         for name in sorted(st.session_state.scenarios.keys()):
             is_active = (name == st.session_state.active_scenario)
 
             row_l, row_r = st.columns([0.82, 0.18])
             with row_l:
-                # Highlight active scenario using primary button style
                 btn_type = "primary" if is_active else "secondary"
                 if st.button(name, key=f"load_{name}", use_container_width=True, type=btn_type):
                     _load_snapshot(st.session_state.scenarios[name])
@@ -272,9 +270,7 @@ with st.sidebar:
                     st.rerun()
 
             with row_r:
-                # Small delete x
                 if st.button("✕", key=f"del_{name}", use_container_width=True):
-                    # If deleting the active scenario, clear active marker
                     if st.session_state.active_scenario == name:
                         st.session_state.active_scenario = None
                     del st.session_state.scenarios[name]
@@ -285,7 +281,6 @@ with st.sidebar:
             if st.button("Save current over active scenario", use_container_width=True):
                 st.session_state.scenarios[st.session_state.active_scenario] = _snapshot()
                 st.success("Saved")
-
 
 # Main page
 st.title("Inputs")
@@ -346,22 +341,26 @@ with st.expander("Income", expanded=True):
 
 # Investments
 with st.expander("Investments", expanded=True):
-    add1, add2, add3 = st.columns([1.2, 1.8, 0.8])
-    with add1:
-        new_type = st.selectbox(
-            "Type",
-            ["Investment property", "Shares/ETFs", "Cash/Term deposit", "Other"],
-            key="new_inv_type",
-        )
-    with add2:
-        new_name = st.text_input("Name", value="", placeholder="e.g., IP - Parramatta", key="new_inv_name")
-    with add3:
-        if st.button("Add", use_container_width=True):
+    # Use a form so the investment name clears cleanly without mutating widget session state post-creation
+    with st.form("add_investment_form", clear_on_submit=True):
+        add1, add2, add3 = st.columns([1.2, 1.8, 0.8])
+        with add1:
+            new_type = st.selectbox(
+                "Type",
+                ["Investment property", "Shares/ETFs", "Cash/Term deposit", "Other"],
+                key="new_inv_type",
+            )
+        with add2:
+            new_inv_name = st.text_input("Name", value="", placeholder="e.g., IP - Parramatta", key="new_inv_name")
+        with add3:
+            add_submitted = st.form_submit_button("Add", use_container_width=True)
+
+        if add_submitted:
             inv_id = str(uuid.uuid4())[:8]
             inv = {
                 "id": inv_id,  # internal only
                 "type": new_type,
-                "name": new_name.strip() if new_name.strip() else f"{new_type}",
+                "name": (new_inv_name or "").strip() if (new_inv_name or "").strip() else f"{new_type}",
                 "ownership_a_pct": 50.0 if is_couple else 100.0,
                 "gross_income_annual": 0.0,
                 "interest_deductible_annual": 0.0,
@@ -370,7 +369,6 @@ with st.expander("Investments", expanded=True):
                 "vacancy_weeks": 0,
             }
             st.session_state.investments.append(inv)
-            st.session_state.new_inv_name = ""
             st.rerun()
 
     if not st.session_state.investments:
@@ -409,10 +407,11 @@ with st.expander("Investments", expanded=True):
                         st.metric("Ownership", "100% A")
                 with top4:
                     if st.button("Remove", key=f"{inv_key}_remove", use_container_width=True):
-                        st.session_state.investments = [x for x in st.session_state.investments if x.get("id") != inv.get("id")]
+                        st.session_state.investments = [
+                            x for x in st.session_state.investments if x.get("id") != inv.get("id")
+                        ]
                         st.rerun()
 
-                # Aligned input row(s) per type
                 if inv["type"] == "Investment property":
                     r1, r2, r3, r4 = st.columns([1.0, 1.0, 1.0, 1.0])
                     with r1:
@@ -489,7 +488,6 @@ with st.expander("Investments", expanded=True):
             st.session_state.investments[idx] = inv
 
 
-# Export / troubleshooting (optional)
 with st.expander("Export / troubleshooting", expanded=False):
     st.write("Shows the current inputs payload (useful for troubleshooting or sharing exact inputs).")
     st.json(_snapshot())
