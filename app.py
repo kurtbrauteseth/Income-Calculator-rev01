@@ -31,7 +31,6 @@ def _ensure_state() -> None:
 
     if "person_a" not in st.session_state:
         st.session_state.person_a = {
-            "name": "Person A",
             "base_salary_annual": 0.0,
             "salary_includes_sg": False,
             "weeks_away": 0,
@@ -43,7 +42,6 @@ def _ensure_state() -> None:
 
     if "person_b" not in st.session_state:
         st.session_state.person_b = {
-            "name": "Person B",
             "base_salary_annual": 0.0,
             "salary_includes_sg": False,
             "weeks_away": 0,
@@ -158,11 +156,7 @@ def render_person_block(person_key: str, title: str) -> None:
     p = st.session_state[person_key]
 
     with st.container(border=True):
-        header_l, header_r = st.columns([1.4, 1.0])
-        with header_l:
-            st.markdown(f"**{title}**")
-        with header_r:
-            p["name"] = st.text_input("Label", value=p.get("name", title), key=f"{person_key}_name")
+        st.markdown(f"**{title}**")
 
         # Row 1: Salary and package toggle
         r1c1, r1c2 = st.columns([1.3, 1.0])
@@ -180,9 +174,12 @@ def render_person_block(person_key: str, title: str) -> None:
                 key=f"{person_key}_includes_sg",
             )
 
-        # Row 2: Remote allowance inputs
-        r2c1, r2c2, r2c3 = st.columns([1.0, 1.0, 1.0])
+        # Row 2: Derived uplift on left, weeks next to uplift %, uplift % to the right
+        uplift_annual = calc_uplift_annual(p["base_salary_annual"], p["uplift_pct"], p["weeks_away"])
+        r2c1, r2c2, r2c3 = st.columns([1.2, 1.0, 1.0])
         with r2c1:
+            st.metric("Uplift (annual)", f"${uplift_annual:,.0f}")
+        with r2c2:
             p["weeks_away"] = int_input(
                 "Weeks working away",
                 key=f"{person_key}_weeks_away",
@@ -190,26 +187,24 @@ def render_person_block(person_key: str, title: str) -> None:
                 min_value=0,
                 max_value=52,
             )
-        with r2c2:
+        with r2c3:
             p["uplift_pct"] = pct_input(
                 "Remote uplift (%)",
                 key=f"{person_key}_uplift_pct",
                 value=float(p.get("uplift_pct", 0.0)),
                 max_value=200.0,
             )
-        with r2c3:
-            uplift_annual = calc_uplift_annual(p["base_salary_annual"], p["uplift_pct"], p["weeks_away"])
-            st.metric("Uplift (annual)", f"${uplift_annual:,.0f}")
 
         # Row 3: SG + toggle
+        sg_annual = calc_sg_annual(
+            base_salary_annual=p["base_salary_annual"],
+            salary_includes_sg=bool(p.get("salary_includes_sg", False)),
+            uplift_annual=uplift_annual,
+            uplift_sg_applies=bool(p.get("uplift_sg_applies", False)),
+        )
+
         r3c1, r3c2, r3c3 = st.columns([1.0, 1.0, 1.0])
         with r3c1:
-            sg_annual = calc_sg_annual(
-                base_salary_annual=p["base_salary_annual"],
-                salary_includes_sg=bool(p.get("salary_includes_sg", False)),
-                uplift_annual=uplift_annual,
-                uplift_sg_applies=bool(p.get("uplift_sg_applies", False)),
-            )
             st.metric("SG (12%, annual)", f"${sg_annual:,.0f}")
         with r3c2:
             p["uplift_sg_applies"] = st.toggle(
@@ -218,7 +213,6 @@ def render_person_block(person_key: str, title: str) -> None:
                 key=f"{person_key}_uplift_sg",
             )
         with r3c3:
-            # spacer, keeps alignment consistent
             st.write("")
 
         # Row 4: Concessional + RFB
@@ -247,7 +241,7 @@ def render_person_block(person_key: str, title: str) -> None:
 st.set_page_config(page_title="Income Calculator (AU) — Inputs", layout="wide")
 _ensure_state()
 
-# Sidebar: scenarios (clean)
+# Sidebar: scenarios (highlight active, delete with x)
 with st.sidebar:
     st.subheader("Scenarios")
 
@@ -264,19 +258,33 @@ with st.sidebar:
 
     if st.session_state.scenarios:
         st.markdown("**Your scenarios**")
+
         for name in sorted(st.session_state.scenarios.keys()):
             is_active = (name == st.session_state.active_scenario)
-            label = f"• {name}" + ("  ✅" if is_active else "")
-            if st.button(label, key=f"load_{name}", use_container_width=True):
-                _load_snapshot(st.session_state.scenarios[name])
-                st.session_state.active_scenario = name
-                st.rerun()
 
-    st.divider()
-    if st.session_state.active_scenario:
-        if st.button("Save current over active scenario", use_container_width=True):
-            st.session_state.scenarios[st.session_state.active_scenario] = _snapshot()
-            st.success("Saved")
+            row_l, row_r = st.columns([0.82, 0.18])
+            with row_l:
+                # Highlight active scenario using primary button style
+                btn_type = "primary" if is_active else "secondary"
+                if st.button(name, key=f"load_{name}", use_container_width=True, type=btn_type):
+                    _load_snapshot(st.session_state.scenarios[name])
+                    st.session_state.active_scenario = name
+                    st.rerun()
+
+            with row_r:
+                # Small delete x
+                if st.button("✕", key=f"del_{name}", use_container_width=True):
+                    # If deleting the active scenario, clear active marker
+                    if st.session_state.active_scenario == name:
+                        st.session_state.active_scenario = None
+                    del st.session_state.scenarios[name]
+                    st.rerun()
+
+        st.divider()
+        if st.session_state.active_scenario:
+            if st.button("Save current over active scenario", use_container_width=True):
+                st.session_state.scenarios[st.session_state.active_scenario] = _snapshot()
+                st.success("Saved")
 
 
 # Main page
@@ -307,7 +315,6 @@ with st.expander("Household", expanded=True):
         )
 
     with c3:
-        # Right-side: couple + cover
         st.session_state.household["is_couple"] = st.toggle(
             "Couple",
             value=bool(st.session_state.household.get("is_couple", True)),
@@ -409,13 +416,34 @@ with st.expander("Investments", expanded=True):
                 if inv["type"] == "Investment property":
                     r1, r2, r3, r4 = st.columns([1.0, 1.0, 1.0, 1.0])
                     with r1:
-                        inv["rent_per_week"] = money_input("Rent ($/week)", key=f"{inv_key}_rent", value=float(inv.get("rent_per_week", 0.0)), step=10.0)
+                        inv["rent_per_week"] = money_input(
+                            "Rent ($/week)",
+                            key=f"{inv_key}_rent",
+                            value=float(inv.get("rent_per_week", 0.0)),
+                            step=10.0,
+                        )
                     with r2:
-                        inv["vacancy_weeks"] = int_input("Vacancy (weeks)", key=f"{inv_key}_vac", value=int(inv.get("vacancy_weeks", 0)), min_value=0, max_value=52)
+                        inv["vacancy_weeks"] = int_input(
+                            "Vacancy (weeks)",
+                            key=f"{inv_key}_vac",
+                            value=int(inv.get("vacancy_weeks", 0)),
+                            min_value=0,
+                            max_value=52,
+                        )
                     with r3:
-                        inv["interest_deductible_annual"] = money_input("Interest (annual, $)", key=f"{inv_key}_int", value=float(inv.get("interest_deductible_annual", 0.0)), step=200.0)
+                        inv["interest_deductible_annual"] = money_input(
+                            "Interest (annual, $)",
+                            key=f"{inv_key}_int",
+                            value=float(inv.get("interest_deductible_annual", 0.0)),
+                            step=200.0,
+                        )
                     with r4:
-                        inv["other_deductible_annual"] = money_input("Other deductible (annual, $)", key=f"{inv_key}_other", value=float(inv.get("other_deductible_annual", 0.0)), step=200.0)
+                        inv["other_deductible_annual"] = money_input(
+                            "Other deductible (annual, $)",
+                            key=f"{inv_key}_other",
+                            value=float(inv.get("other_deductible_annual", 0.0)),
+                            step=200.0,
+                        )
 
                     weeks_rented = max(0, 52 - int(inv["vacancy_weeks"]))
                     inv["gross_income_annual"] = float(inv["rent_per_week"]) * float(weeks_rented)
@@ -423,7 +451,12 @@ with st.expander("Investments", expanded=True):
                 elif inv["type"] == "Cash/Term deposit":
                     r1, r2 = st.columns([1.0, 1.0])
                     with r1:
-                        inv["gross_income_annual"] = money_input("Interest income (annual, $)", key=f"{inv_key}_gross", value=float(inv.get("gross_income_annual", 0.0)), step=100.0)
+                        inv["gross_income_annual"] = money_input(
+                            "Interest income (annual, $)",
+                            key=f"{inv_key}_gross",
+                            value=float(inv.get("gross_income_annual", 0.0)),
+                            step=100.0,
+                        )
                     with r2:
                         inv["interest_deductible_annual"] = 0.0
                         inv["other_deductible_annual"] = 0.0
@@ -432,16 +465,31 @@ with st.expander("Investments", expanded=True):
                 else:
                     r1, r2, r3 = st.columns([1.2, 1.0, 1.0])
                     with r1:
-                        inv["gross_income_annual"] = money_input("Gross income (annual, $)", key=f"{inv_key}_gross", value=float(inv.get("gross_income_annual", 0.0)), step=200.0)
+                        inv["gross_income_annual"] = money_input(
+                            "Gross income (annual, $)",
+                            key=f"{inv_key}_gross",
+                            value=float(inv.get("gross_income_annual", 0.0)),
+                            step=200.0,
+                        )
                     with r2:
-                        inv["interest_deductible_annual"] = money_input("Deductible interest (annual, $)", key=f"{inv_key}_int2", value=float(inv.get("interest_deductible_annual", 0.0)), step=200.0)
+                        inv["interest_deductible_annual"] = money_input(
+                            "Deductible interest (annual, $)",
+                            key=f"{inv_key}_int2",
+                            value=float(inv.get("interest_deductible_annual", 0.0)),
+                            step=200.0,
+                        )
                     with r3:
-                        inv["other_deductible_annual"] = money_input("Other deductible (annual, $)", key=f"{inv_key}_other2", value=float(inv.get("other_deductible_annual", 0.0)), step=200.0)
+                        inv["other_deductible_annual"] = money_input(
+                            "Other deductible (annual, $)",
+                            key=f"{inv_key}_other2",
+                            value=float(inv.get("other_deductible_annual", 0.0)),
+                            step=200.0,
+                        )
 
             st.session_state.investments[idx] = inv
 
 
-# Export / troubleshooting (replaces "debug")
+# Export / troubleshooting (optional)
 with st.expander("Export / troubleshooting", expanded=False):
-    st.write("This shows the current inputs payload (useful for troubleshooting or sharing exact inputs).")
+    st.write("Shows the current inputs payload (useful for troubleshooting or sharing exact inputs).")
     st.json(_snapshot())
