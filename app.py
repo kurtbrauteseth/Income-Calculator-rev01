@@ -5,7 +5,7 @@
 
 import copy
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
 import streamlit as st
 
@@ -269,9 +269,9 @@ def render_person_block(person_key: str, title: str) -> None:
         with r2_right:
             st.metric("Uplift ($/year)", f"${uplift_annual:,.0f}")
 
-        # Row 2.5: show combined income (base + uplift)
-        combined_income = float(p["base_salary_annual"]) + float(uplift_annual)
-        st.metric("Combined income ($/year)", f"${combined_income:,.0f}")
+        # Row 2.5: show total salary (base + uplift)
+        total_salary = float(p["base_salary_annual"]) + float(uplift_annual)
+        st.metric("Total salary ($/year)", f"${total_salary:,.0f}")
 
         # Row 3: SG + toggle
         sg_annual = calc_sg_annual(
@@ -314,7 +314,6 @@ def render_person_block(person_key: str, title: str) -> None:
 
 
 def _render_metric_card(title: str, items: list, bg: str) -> None:
-    # items: list of (label, value_str)
     html_items = "".join(
         f"""
         <div style="display:flex; justify-content:space-between; gap:16px; padding:6px 0;">
@@ -340,6 +339,15 @@ def _render_metric_card(title: str, items: list, bg: str) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def _render_section_rows(rows: List[Tuple[str, str]]) -> None:
+    for label, value in rows:
+        c1, c2 = st.columns([1.6, 1.0])
+        with c1:
+            st.write(label)
+        with c2:
+            st.write(f"**{value}**")
 
 
 # -----------------------------
@@ -390,139 +398,10 @@ with st.sidebar:
                 st.session_state.scenarios[st.session_state.active_scenario] = _snapshot()
                 st.success("Saved")
 
-# Top tabs
-tab_calc, tab_inputs = st.tabs(["Income calculator", "Inputs"])
-
-with tab_calc:
-    # Pastel section colors (light)
-    BG_OBJECTIVE = "#EEF6FF"
-    BG_INDIVIDUAL = "#F2F9F1"
-    BG_HOUSEHOLD = "#FFF7E6"
-    BG_INVEST = "#F7F0FF"
-
-    st.markdown("## Income calculator")
-
-    # Read current inputs to show "key metrics to be produced" and (where possible) show
-    # input-derived placeholders/aggregates without doing tax calculations.
-    hh = st.session_state.household
-    is_couple = bool(hh.get("is_couple", True))
-    children = int(hh.get("dependant_children", 0))
-    tax_year = str(hh.get("tax_year_label", "2025–26"))
-
-    pa = st.session_state.person_a
-    pb = st.session_state.person_b
-
-    pa_uplift = calc_uplift_annual(pa["base_salary_annual"], pa["uplift_pct"], pa["weeks_away"])
-    pb_uplift = calc_uplift_annual(pb["base_salary_annual"], pb["uplift_pct"], pb["weeks_away"]) if is_couple else 0.0
-
-    pa_combined = _safe_float(pa["base_salary_annual"]) + pa_uplift
-    pb_combined = (_safe_float(pb["base_salary_annual"]) + pb_uplift) if is_couple else 0.0
-
-    splits = _household_investment_splits(st.session_state.investments, is_couple=is_couple)
-
-    household_earned_gross = pa_combined + pb_combined
-    household_gross_invest = splits["gross_total"]
-    household_net_taxable_invest = splits["net_taxable_total"]
-
-    # Objective / scope
-    _render_metric_card(
-        "Objective",
-        [
-            ("Goal", "Assess individual + household income and tax outcomes (FY2025–26 onwards)"),
-            ("Includes", "Salary + remote uplift + investments (negative gearing) + SG + Medicare + Div 293 + MLS"),
-            ("Outputs", "Each person + combined household view, before/after tax and negative gearing benefit"),
-        ],
-        BG_OBJECTIVE,
-    )
-
-    # Key metrics: Individual
-    colA, colB = st.columns(2, gap="large")
-
-    with colA:
-        _render_metric_card(
-            "Person A — key metrics (to be calculated)",
-            [
-                ("Taxable income (before negative gearing)", "—"),
-                ("Taxable income (after negative gearing)", "—"),
-                ("Base salary ($/year)", _fmt_money(_safe_float(pa["base_salary_annual"]))),
-                ("Remote uplift ($/year)", _fmt_money(pa_uplift)),
-                ("Combined income ($/year)", _fmt_money(pa_combined)),
-                ("Investment income allocated ($/year)", _fmt_money(splits["a_gross"])),
-                ("Investment net taxable allocated ($/year)", _fmt_money(splits["a_net_taxable"])),
-                ("Super Guarantee (12%, $/year)", _fmt_money(calc_sg_annual(pa["base_salary_annual"], pa["salary_includes_sg"], pa_uplift, pa["uplift_sg_applies"]))),
-                ("Tax (income tax)", "—"),
-                ("Tax (Div 293)", "—"),
-                ("Tax (Medicare levy)", "—"),
-                ("Tax (MLS if applicable)", "—"),
-                ("Total tax", "—"),
-            ],
-            BG_INDIVIDUAL,
-        )
-
-    with colB:
-        if is_couple:
-            _render_metric_card(
-                "Person B — key metrics (to be calculated)",
-                [
-                    ("Taxable income (before negative gearing)", "—"),
-                    ("Taxable income (after negative gearing)", "—"),
-                    ("Base salary ($/year)", _fmt_money(_safe_float(pb["base_salary_annual"]))),
-                    ("Remote uplift ($/year)", _fmt_money(pb_uplift)),
-                    ("Combined income ($/year)", _fmt_money(pb_combined)),
-                    ("Investment income allocated ($/year)", _fmt_money(splits["b_gross"])),
-                    ("Investment net taxable allocated ($/year)", _fmt_money(splits["b_net_taxable"])),
-                    ("Super Guarantee (12%, $/year)", _fmt_money(calc_sg_annual(pb["base_salary_annual"], pb["salary_includes_sg"], pb_uplift, pb["uplift_sg_applies"]))),
-                    ("Tax (income tax)", "—"),
-                    ("Tax (Div 293)", "—"),
-                    ("Tax (Medicare levy)", "—"),
-                    ("Tax (MLS if applicable)", "—"),
-                    ("Total tax", "—"),
-                ],
-                BG_INDIVIDUAL,
-            )
-        else:
-            _render_metric_card(
-                "Person B — key metrics",
-                [
-                    ("Status", "Not enabled (single mode)"),
-                ],
-                BG_INDIVIDUAL,
-            )
-
-    # Household view
-    _render_metric_card(
-        "Household — key metrics (to be calculated)",
-        [
-            ("Tax year", tax_year),
-            ("Household type", "Couple" if is_couple else "Single"),
-            ("Dependent children", str(children)),
-            ("After-tax earned income (before expenses)", "—"),
-            ("Gross investment income (household, $/year)", _fmt_money(household_gross_invest)),
-            ("Investment deductions (interest + other, $/year)", _fmt_money(splits["deductions_total"])),
-            ("Net taxable investment amount (household, $/year)", _fmt_money(household_net_taxable_invest)),
-            ("Total after-tax earnings", "—"),
-            ("Total super contributions (household)", "—"),
-            ("Negative gearing benefit (tax value)", "—"),
-        ],
-        BG_HOUSEHOLD,
-    )
-
-    # Negative gearing definitions / clarity (professional, concise)
-    _render_metric_card(
-        "Definitions used in this app",
-        [
-            ("Earned income", "Base salary + remote uplift"),
-            ("Earned income after tax (before expenses)", "Earned income minus personal taxes (income tax + Medicare + Div293 + MLS)"),
-            ("Negative gearing benefit", "Tax reduction from allowable investment losses used to reduce taxable income"),
-            ("Investment losses visibility", "Shows taxable income before vs after investment losses"),
-        ],
-        BG_INVEST,
-    )
+# Top tabs (Inputs first)
+tab_inputs, tab_calc = st.tabs(["Inputs", "Income calculator"])
 
 with tab_inputs:
-    # -----------------------------
-    # Inputs page (unchanged layout/content aside from being under this tab)
-    # -----------------------------
     st.title("Inputs")
 
     # Household
@@ -731,3 +610,146 @@ with tab_inputs:
     with st.expander("Export / troubleshooting", expanded=False):
         st.write("Shows the current inputs payload (useful for troubleshooting or sharing exact inputs).")
         st.json(_snapshot())
+
+with tab_calc:
+    # Pastel section colors (light)
+    BG_INDIVIDUAL = "#F2F9F1"
+    BG_HOUSEHOLD = "#FFF7E6"
+    BG_INVEST = "#F7F0FF"
+
+    st.markdown("## Income calculator")
+
+    hh = st.session_state.household
+    is_couple = bool(hh.get("is_couple", True))
+
+    pa = st.session_state.person_a
+    pb = st.session_state.person_b
+
+    pa_uplift = calc_uplift_annual(pa["base_salary_annual"], pa["uplift_pct"], pa["weeks_away"])
+    pb_uplift = calc_uplift_annual(pb["base_salary_annual"], pb["uplift_pct"], pb["weeks_away"]) if is_couple else 0.0
+
+    pa_total_salary = _safe_float(pa["base_salary_annual"]) + pa_uplift
+    pb_total_salary = (_safe_float(pb["base_salary_annual"]) + pb_uplift) if is_couple else 0.0
+
+    splits = _household_investment_splits(st.session_state.investments, is_couple=is_couple)
+
+    # Build "taxable income" from currently available inputs only:
+    # taxable_income ~= total_salary + net_taxable_investment_allocated
+    pa_taxable_income = pa_total_salary + splits["a_net_taxable"]
+    pb_taxable_income = pb_total_salary + splits["b_net_taxable"]
+
+    # Placeholder tax/super tax values (to be computed once tax engine is added)
+    ZERO = 0.0
+
+    colA, colB = st.columns(2, gap="large")
+
+    with colA:
+        with st.container(border=True):
+            st.markdown("### Person A")
+
+            with st.expander(f"Taxable income  \u00a0\u00a0 **{_fmt_money(pa_taxable_income)}**", expanded=True):
+                _render_section_rows(
+                    [
+                        ("Base salary", _fmt_money(_safe_float(pa["base_salary_annual"]))),
+                        ("Uplift", _fmt_money(pa_uplift)),
+                        ("Total salary", _fmt_money(pa_total_salary)),
+                        ("Investment income", _fmt_money(splits["a_gross"])),
+                        ("Net investment income", _fmt_money(splits["a_net_taxable"])),
+                    ]
+                )
+
+            pa_sg = calc_sg_annual(
+                pa["base_salary_annual"],
+                bool(pa["salary_includes_sg"]),
+                pa_uplift,
+                bool(pa["uplift_sg_applies"]),
+            )
+            with st.expander(f"Superannuation  \u00a0\u00a0 **{_fmt_money(pa_sg + _safe_float(pa['extra_concessional_annual']))}**", expanded=False):
+                _render_section_rows(
+                    [
+                        ("Super Guarantee", _fmt_money(pa_sg)),
+                        ("Tax (taken from super)", _fmt_money(ZERO)),
+                        ("Concessional", _fmt_money(_safe_float(pa["extra_concessional_annual"]))),
+                        ("Non-concessional", _fmt_money(ZERO)),
+                    ]
+                )
+
+            with st.expander(f"Tax  \u00a0\u00a0 **{_fmt_money(ZERO)}**", expanded=False):
+                _render_section_rows(
+                    [
+                        ("Income tax", _fmt_money(ZERO)),
+                        ("Division 293 (additional tax on super)", _fmt_money(ZERO)),
+                        ("Medicare", _fmt_money(ZERO)),
+                    ]
+                )
+
+    with colB:
+        if is_couple:
+            with st.container(border=True):
+                st.markdown("### Person B")
+
+                with st.expander(f"Taxable income  \u00a0\u00a0 **{_fmt_money(pb_taxable_income)}**", expanded=True):
+                    _render_section_rows(
+                        [
+                            ("Base salary", _fmt_money(_safe_float(pb["base_salary_annual"]))),
+                            ("Uplift", _fmt_money(pb_uplift)),
+                            ("Total salary", _fmt_money(pb_total_salary)),
+                            ("Investment income", _fmt_money(splits["b_gross"])),
+                            ("Net investment income", _fmt_money(splits["b_net_taxable"])),
+                        ]
+                    )
+
+                pb_sg = calc_sg_annual(
+                    pb["base_salary_annual"],
+                    bool(pb["salary_includes_sg"]),
+                    pb_uplift,
+                    bool(pb["uplift_sg_applies"]),
+                )
+                with st.expander(f"Superannuation  \u00a0\u00a0 **{_fmt_money(pb_sg + _safe_float(pb['extra_concessional_annual']))}**", expanded=False):
+                    _render_section_rows(
+                        [
+                            ("Super Guarantee", _fmt_money(pb_sg)),
+                            ("Tax (taken from super)", _fmt_money(ZERO)),
+                            ("Concessional", _fmt_money(_safe_float(pb["extra_concessional_annual"]))),
+                            ("Non-concessional", _fmt_money(ZERO)),
+                        ]
+                    )
+
+                with st.expander(f"Tax  \u00a0\u00a0 **{_fmt_money(ZERO)}**", expanded=False):
+                    _render_section_rows(
+                        [
+                            ("Income tax", _fmt_money(ZERO)),
+                            ("Division 293 (additional tax on super)", _fmt_money(ZERO)),
+                            ("Medicare", _fmt_money(ZERO)),
+                        ]
+                    )
+        else:
+            with st.container(border=True):
+                st.markdown("### Person B")
+                st.write("Not enabled (single mode).")
+
+    # Household (remove tax year/type/dependents)
+    with st.container():
+        _render_metric_card(
+            "Household",
+            [
+                ("After-tax earned income (before expenses)", _fmt_money(ZERO)),
+                ("Gross investment income ($/year)", _fmt_money(splits["gross_total"])),
+                ("Total after-tax earnings", _fmt_money(ZERO)),
+                ("Total super contributions", _fmt_money(ZERO)),
+                ("Negative gearing benefit", _fmt_money(ZERO)),
+            ],
+            BG_HOUSEHOLD,
+        )
+
+    # Keep definitions
+    _render_metric_card(
+        "Definitions used in this app",
+        [
+            ("Earned income", "Base salary + remote uplift"),
+            ("Earned income after tax (before expenses)", "Earned income minus personal taxes (income tax + Medicare + Div293 + MLS)"),
+            ("Negative gearing benefit", "Tax reduction from allowable investment losses used to reduce taxable income"),
+            ("Investment losses visibility", "Shows investment income and net taxable investment position by owner allocation"),
+        ],
+        BG_INVEST,
+    )
