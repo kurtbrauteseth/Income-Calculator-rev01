@@ -767,14 +767,14 @@ with tab_calc:
     pa_uplift = calc_uplift_annual(pa["base_salary_annual"], pa["uplift_pct"], pa["weeks_away"])
     pb_uplift = calc_uplift_annual(pb["base_salary_annual"], pb["uplift_pct"], pb["weeks_away"]) if is_couple else 0.0
 
-    pa_earned_income = pa_base_ote + pa_uplift
-    pb_earned_income = (pb_base_ote + pb_uplift) if is_couple else 0.0
+    pa_total_salary = pa_base_ote + pa_uplift
+    pb_total_salary = (pb_base_ote + pb_uplift) if is_couple else 0.0
 
     splits = _household_investment_splits(st.session_state.investments, is_couple=is_couple)
 
-    # taxable_income ~= earned_income (OTE + uplift) + net_taxable_investment_allocated
-    pa_taxable_income = pa_earned_income + splits["a_net_taxable"]
-    pb_taxable_income = pb_earned_income + splits["b_net_taxable"]
+    # taxable_income ~= total_salary + net_taxable_investment_allocated
+    pa_taxable_income = pa_total_salary + splits["a_net_taxable"]
+    pb_taxable_income = pb_total_salary + splits["b_net_taxable"]
 
     # -----------------------------
     # Super contributions + taxes
@@ -802,7 +802,7 @@ with tab_calc:
     pa_concessional_total = max(0.0, pa_sg + pa_extra_cc)
     pb_concessional_total = max(0.0, pb_sg + pb_extra_cc) if is_couple else 0.0
 
-    # Non-concessional: no inputs yet, keep as 0 (calculated, not placeholder)
+    # Non-concessional: no inputs yet, keep as 0 (calculated)
     pa_non_concessional_total = 0.0
     pb_non_concessional_total = 0.0
 
@@ -813,31 +813,67 @@ with tab_calc:
     # -----------------------------
     # Personal taxes (income tax, Medicare levy, Div293)
     # -----------------------------
-    pa_income_tax = calc_income_tax_resident_annual(pa_taxable_income)
-    pb_income_tax = calc_income_tax_resident_annual(pb_taxable_income) if is_couple else 0.0
-
     pa_rfb = _safe_float(pa.get("reportable_fringe_benefits_annual", 0.0))
     pb_rfb = _safe_float(pb.get("reportable_fringe_benefits_annual", 0.0)) if is_couple else 0.0
 
-    pa_medicare, pb_medicare = calc_medicare_levy_split(
-        is_couple_local=is_couple,
-        children=dependant_children,
-        pa_taxable=pa_taxable_income,
-        pb_taxable=pb_taxable_income,
-        pa_rfb=pa_rfb,
-        pb_rfb=pb_rfb,
-        year_label=str(hh.get("tax_year_label", "2025–26")),
-    )
+    def _compute_tax_components(pa_taxable_local: float, pb_taxable_local: float) -> Tuple[float, float, float, float, float, float]:
+        pa_income_tax_local = calc_income_tax_resident_annual(pa_taxable_local)
+        pb_income_tax_local = calc_income_tax_resident_annual(pb_taxable_local) if is_couple else 0.0
 
-    pa_div293 = calc_div293_tax(pa_taxable_income, pa_rfb, pa_concessional_total)
-    pb_div293 = calc_div293_tax(pb_taxable_income, pb_rfb, pb_concessional_total) if is_couple else 0.0
+        pa_medicare_local, pb_medicare_local = calc_medicare_levy_split(
+            is_couple_local=is_couple,
+            children=dependant_children,
+            pa_taxable=pa_taxable_local,
+            pb_taxable=pb_taxable_local,
+            pa_rfb=pa_rfb,
+            pb_rfb=pb_rfb,
+            year_label=str(hh.get("tax_year_label", "2025–26")),
+        )
+
+        pa_div293_local = calc_div293_tax(pa_taxable_local, pa_rfb, pa_concessional_total)
+        pb_div293_local = calc_div293_tax(pb_taxable_local, pb_rfb, pb_concessional_total) if is_couple else 0.0
+
+        return (
+            pa_income_tax_local,
+            pb_income_tax_local,
+            pa_medicare_local,
+            pb_medicare_local,
+            pa_div293_local,
+            pb_div293_local,
+        )
+
+    pa_income_tax, pb_income_tax, pa_medicare, pb_medicare, pa_div293, pb_div293 = _compute_tax_components(
+        pa_taxable_income, pb_taxable_income
+    )
 
     # Total tax (as requested): income tax + Medicare levy + Div293 + super contributions tax
     pa_total_tax = pa_income_tax + pa_medicare + pa_div293 + pa_super_tax
     pb_total_tax = (pb_income_tax + pb_medicare + pb_div293 + pb_super_tax) if is_couple else 0.0
 
+    # -----------------------------
+    # Negative gearing benefit (tax reduction from investment losses)
+    # -----------------------------
+    pa_taxable_no_losses = pa_total_salary + max(0.0, splits["a_net_taxable"])
+    pb_taxable_no_losses = pb_total_salary + max(0.0, splits["b_net_taxable"])
+
+    (
+        pa_income_tax_nl,
+        pb_income_tax_nl,
+        pa_medicare_nl,
+        pb_medicare_nl,
+        pa_div293_nl,
+        pb_div293_nl,
+    ) = _compute_tax_components(pa_taxable_no_losses, pb_taxable_no_losses)
+
+    pa_ng_benefit = max(0.0, (pa_income_tax_nl + pa_medicare_nl + pa_div293_nl) - (pa_income_tax + pa_medicare + pa_div293))
+    pb_ng_benefit = (
+        max(0.0, (pb_income_tax_nl + pb_medicare_nl + pb_div293_nl) - (pb_income_tax + pb_medicare + pb_div293))
+        if is_couple
+        else 0.0
+    )
+
     # Totals for household cards (no UI changes; values only)
-    household_earned_income = pa_earned_income + (pb_earned_income if is_couple else 0.0)
+    household_total_salary = pa_total_salary + (pb_total_salary if is_couple else 0.0)
     household_taxable_income = pa_taxable_income + (pb_taxable_income if is_couple else 0.0)
     household_super_total = (pa_sg + pa_extra_cc) + ((pb_sg + pb_extra_cc) if is_couple else 0.0)
 
@@ -851,14 +887,14 @@ with tab_calc:
                 rows = []
                 if bool(pa.get("salary_includes_sg", False)):
                     rows.append(("Salary package (incl SG)", _fmt_money(_safe_float(pa.get("base_salary_annual", 0.0)))))
-                    rows.append(("Base salary (OTE)", _fmt_money(pa_base_ote)))
+                    rows.append(("Base salary", _fmt_money(pa_base_ote)))
                 else:
-                    rows.append(("Base salary (OTE)", _fmt_money(pa_base_ote)))
+                    rows.append(("Base salary", _fmt_money(pa_base_ote)))
 
                 rows.extend(
                     [
                         ("Uplift", _fmt_money(pa_uplift)),
-                        ("Earned income (OTE + uplift)", _fmt_money(pa_earned_income)),
+                        ("Total salary", _fmt_money(pa_total_salary)),
                         ("Investment income", _fmt_money(splits["a_gross"])),
                         ("Net investment income", _fmt_money(splits["a_net_taxable"])),
                     ]
@@ -872,7 +908,7 @@ with tab_calc:
                 _render_section_rows(
                     [
                         ("Super Guarantee", _fmt_money(pa_sg)),
-                        ("Tax (taken from super)", _fmt_money(pa_super_tax)),
+                        ("Tax (super)", _fmt_money(pa_super_tax)),
                         ("Concessional", _fmt_money(pa_concessional_total)),
                         ("Non-concessional", _fmt_money(pa_non_concessional_total)),
                     ]
@@ -884,6 +920,7 @@ with tab_calc:
                         ("Income tax", _fmt_money(pa_income_tax)),
                         ("Division 293 (additional tax on super)", _fmt_money(pa_div293)),
                         ("Medicare", _fmt_money(pa_medicare)),
+                        ("Negative gearing benefit", _fmt_money(pa_ng_benefit)),
                     ]
                 )
 
@@ -896,14 +933,14 @@ with tab_calc:
                     rows = []
                     if bool(pb.get("salary_includes_sg", False)):
                         rows.append(("Salary package (incl SG)", _fmt_money(_safe_float(pb.get("base_salary_annual", 0.0)))))
-                        rows.append(("Base salary (OTE)", _fmt_money(pb_base_ote)))
+                        rows.append(("Base salary", _fmt_money(pb_base_ote)))
                     else:
-                        rows.append(("Base salary (OTE)", _fmt_money(pb_base_ote)))
+                        rows.append(("Base salary", _fmt_money(pb_base_ote)))
 
                     rows.extend(
                         [
                             ("Uplift", _fmt_money(pb_uplift)),
-                            ("Earned income (OTE + uplift)", _fmt_money(pb_earned_income)),
+                            ("Total salary", _fmt_money(pb_total_salary)),
                             ("Investment income", _fmt_money(splits["b_gross"])),
                             ("Net investment income", _fmt_money(splits["b_net_taxable"])),
                         ]
@@ -917,7 +954,7 @@ with tab_calc:
                     _render_section_rows(
                         [
                             ("Super Guarantee", _fmt_money(pb_sg)),
-                            ("Tax (taken from super)", _fmt_money(pb_super_tax)),
+                            ("Tax (super)", _fmt_money(pb_super_tax)),
                             ("Concessional", _fmt_money(pb_concessional_total)),
                             ("Non-concessional", _fmt_money(pb_non_concessional_total)),
                         ]
@@ -929,6 +966,7 @@ with tab_calc:
                             ("Income tax", _fmt_money(pb_income_tax)),
                             ("Division 293 (additional tax on super)", _fmt_money(pb_div293)),
                             ("Medicare", _fmt_money(pb_medicare)),
+                            ("Negative gearing benefit", _fmt_money(pb_ng_benefit)),
                         ]
                     )
         else:
@@ -941,7 +979,7 @@ with tab_calc:
         _render_metric_card(
             "Household",
             [
-                ("Earned income (OTE + uplift)", _fmt_money(household_earned_income)),
+                ("Total salary", _fmt_money(household_total_salary)),
                 ("Gross investment income ($/year)", _fmt_money(splits["gross_total"])),
                 ("Net investment income ($/year)", _fmt_money(splits["net_taxable_total"])),
                 ("Total taxable income (approx)", _fmt_money(household_taxable_income)),
@@ -954,10 +992,10 @@ with tab_calc:
     _render_metric_card(
         "Definitions used in this app",
         [
-            ("Earned income", "OTE base salary (ex SG) + remote uplift"),
-            ("Taxable income (approx)", "Earned income plus net taxable investment position by owner allocation"),
+            ("Earned income", "Base salary + remote uplift"),
+            ("Taxable income (approx)", "Total salary plus net taxable investment position by owner allocation"),
             ("Earned income after tax (before expenses)", "Not shown here (use Tax sections above)"),
-            ("Negative gearing benefit", "Not calculated yet (tax engine pending)"),
+            ("Negative gearing benefit", "Tax reduction from allowable investment losses used to reduce taxable income"),
             ("Investment losses visibility", "Shows investment income and net taxable investment position by owner allocation"),
         ],
         BG_INVEST,
