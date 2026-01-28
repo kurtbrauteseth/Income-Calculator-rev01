@@ -1004,35 +1004,36 @@ with tab_calc:
 with tab_household:
     st.markdown("## Household dashboard")
 
-    # Dashboard KPIs (Taxable income removed as requested)
-    row1 = st.columns(4)
-    with row1[0]:
+    # Combined household after-tax income (A + B)
+    household_after_tax_income = pa_after_tax_income + (pb_after_tax_income if is_couple else 0.0)
+
+    # Pay (annual) and Pay (monthly)
+    pay_annual = household_pay
+    pay_monthly = household_pay / 12.0
+
+    # Line 1: Total salaries, After-tax income, Pay, Total super
+    line1 = st.columns(4)
+    with line1[0]:
+        st.metric("Total salaries", _fmt_money(household_total_salary))
+    with line1[1]:
+        st.metric("After-tax income", _fmt_money(household_after_tax_income))
+    with line1[2]:
         st.metric("Pay", _fmt_money(household_pay))
-    with row1[1]:
-        st.metric("Total salary", _fmt_money(household_total_salary))
-    with row1[2]:
-        st.metric("Gross investments", _fmt_money(splits["gross_total"]))
-    with row1[3]:
+    with line1[3]:
         st.metric("Total super", _fmt_money(household_super_total))
 
-    row2 = st.columns(4)
-    with row2[0]:
-        st.metric("Negative gearing benefit (household)", _fmt_money(household_ng_benefit))
-    with row2[1]:
-        st.metric("After-tax income (A)", _fmt_money(pa_after_tax_income))
-    with row2[2]:
-        st.metric("After-tax income (B)", _fmt_money(pb_after_tax_income) if is_couple else "—")
-    with row2[3]:
+    # Line 2: Gross investments, Net investments, negative gearing benefit
+    line2 = st.columns(3)
+    with line2[0]:
+        st.metric("Gross investments", _fmt_money(splits["gross_total"]))
+    with line2[1]:
         st.metric("Net investments", _fmt_money(splits["net_taxable_total"]))
+    with line2[2]:
+        st.metric("Negative gearing benefit", _fmt_money(household_ng_benefit))
 
-    st.divider()
-
-    # Editable note (keep title, convert block to editable)
-    st.markdown("### Definitions")
-    st.text_area(
-        "Definitions",
-        value=st.session_state.definitions_note,
-        key="definitions_note",
-        height=220,
-        label_visibility="collapsed",
-    )
+    # Line 3: Pay (annual), Pay (monthly)
+    line3 = st.columns(2)
+    with line3[0]:
+        st.metric("Pay (annual)", _fmt_money(pay_annual))
+    with line3[1]:
+        st.metric("Pay (monthly)", _fmt_money(pay_monthly))
