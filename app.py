@@ -1003,6 +1003,7 @@ with tab_calc:
 
 with tab_household:
     st.markdown("## Household dashboard")
+    st.caption("A clean summary view of combined household position (annual values unless stated).")
 
     # Combined household after-tax income (A + B)
     household_after_tax_income = pa_after_tax_income + (pb_after_tax_income if is_couple else 0.0)
@@ -1011,29 +1012,33 @@ with tab_household:
     pay_annual = household_pay
     pay_monthly = household_pay / 12.0
 
-    # Line 1: Total salaries, After-tax income, Pay, Total super
-    line1 = st.columns(4)
-    with line1[0]:
-        st.metric("Total salaries", _fmt_money(household_total_salary))
-    with line1[1]:
-        st.metric("After-tax income", _fmt_money(household_after_tax_income))
-    with line1[2]:
-        st.metric("Pay", _fmt_money(household_pay))
-    with line1[3]:
-        st.metric("Total super", _fmt_money(household_super_total))
+    # Professional layout: grouped KPI blocks (metrics unchanged)
+    with st.container(border=True):
+        st.markdown("### Earnings & super")
+        line1 = st.columns(4, gap="large")
+        with line1[0]:
+            st.metric("Total salaries", _fmt_money(household_total_salary))
+        with line1[1]:
+            st.metric("After-tax income", _fmt_money(household_after_tax_income))
+        with line1[2]:
+            st.metric("Pay", _fmt_money(household_pay))
+        with line1[3]:
+            st.metric("Total super", _fmt_money(household_super_total))
 
-    # Line 2: Gross investments, Net investments, negative gearing benefit
-    line2 = st.columns(3)
-    with line2[0]:
-        st.metric("Gross investments", _fmt_money(splits["gross_total"]))
-    with line2[1]:
-        st.metric("Net investments", _fmt_money(splits["net_taxable_total"]))
-    with line2[2]:
-        st.metric("Negative gearing benefit", _fmt_money(household_ng_benefit))
+    with st.container(border=True):
+        st.markdown("### Investments & negative gearing")
+        line2 = st.columns(3, gap="large")
+        with line2[0]:
+            st.metric("Gross investments", _fmt_money(splits["gross_total"]))
+        with line2[1]:
+            st.metric("Net investments", _fmt_money(splits["net_taxable_total"]))
+        with line2[2]:
+            st.metric("Negative gearing benefit", _fmt_money(household_ng_benefit))
 
-    # Line 3: Pay (annual), Pay (monthly)
-    line3 = st.columns(2)
-    with line3[0]:
-        st.metric("Pay (annual)", _fmt_money(pay_annual))
-    with line3[1]:
-        st.metric("Pay (monthly)", _fmt_money(pay_monthly))
+    with st.container(border=True):
+        st.markdown("### Pay breakdown")
+        line3 = st.columns(2, gap="large")
+        with line3[0]:
+            st.metric("Pay (annual)", _fmt_money(pay_annual))
+        with line3[1]:
+            st.metric("Pay (monthly)", _fmt_money(pay_monthly))
