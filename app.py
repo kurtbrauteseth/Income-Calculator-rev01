@@ -1,56 +1,33 @@
 # app.py
-# Inputs page ONLY (no tax calculations). Minimal inputs to later compute:
-# - Individual taxable income (before/after negative gearing)
-# - Super (SG + contributions tax + optional extra concessional)
-# - Income tax + Medicare levy (family-aware) + Div 293 (given user-supplied FY26+ parameters)
-# - Household totals, gross investment income, negative gearing benefit (tax effect)
+# Inputs page ONLY — clean minimal inputs for FY2025–26 onwards.
+# Tax brackets / Medicare / MLS / Div 293 rules will be implemented in backend later
+# using official ATO sources (no user-entered tax settings UI).
 
 import copy
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
-import pandas as pd
 import streamlit as st
 
 
 # -----------------------------
-# Helpers
+# Constants (backend defaults)
 # -----------------------------
-def _money_input(label: str, key: str, value: float = 0.0, help_: Optional[str] = None) -> float:
-    return float(
-        st.number_input(
-            label,
-            min_value=0.0,
-            value=float(value),
-            step=100.0,
-            format="%.2f",
-            key=key,
-            help=help_,
-        )
-    )
+SG_RATE = 0.12  # 12% SG (from 1 July 2025 onward)
 
 
-def _pct_input(label: str, key: str, value: float = 50.0, help_: Optional[str] = None) -> float:
-    return float(
-        st.number_input(
-            label,
-            min_value=0.0,
-            max_value=100.0,
-            value=float(value),
-            step=1.0,
-            format="%.0f",
-            key=key,
-            help=help_,
-        )
-    )
-
-
+# -----------------------------
+# State helpers
+# -----------------------------
 def _ensure_state() -> None:
     if "household" not in st.session_state:
         st.session_state.household = {
             "tax_year_label": "2025–26",
             "is_couple": True,
             "dependant_children": 0,
+            # Minimal MLS inputs (kept optional; can be ignored later if you decide not to model MLS)
+            "has_private_hospital_cover_a": False,
+            "has_private_hospital_cover_b": False,
         }
 
     if "person_a" not in st.session_state:
@@ -58,12 +35,12 @@ def _ensure_state() -> None:
             "name": "Person A",
             "resident_for_tax": True,
             "base_salary_annual": 0.0,
-            "salary_includes_sg": False,
-            "remote_uplift_taxable_annual": 0.0,
-            "remote_uplift_sg_applies": False,
+            "salary_includes_sg": False,  # advanced/optional
+            "weeks_away": 0,
+            "uplift_pct": 0.0,  # percent uplift
+            "uplift_sg_applies": False,
             "extra_concessional_annual": 0.0,
             "reportable_fringe_benefits_annual": 0.0,
-            "reportable_employer_super_annual": 0.0,  # RESC other than SG
         }
 
     if "person_b" not in st.session_state:
@@ -71,61 +48,27 @@ def _ensure_state() -> None:
             "name": "Person B",
             "resident_for_tax": True,
             "base_salary_annual": 0.0,
-            "salary_includes_sg": False,
-            "remote_uplift_taxable_annual": 0.0,
-            "remote_uplift_sg_applies": False,
+            "salary_includes_sg": False,  # advanced/optional
+            "weeks_away": 0,
+            "uplift_pct": 0.0,
+            "uplift_sg_applies": False,
             "extra_concessional_annual": 0.0,
             "reportable_fringe_benefits_annual": 0.0,
-            "reportable_employer_super_annual": 0.0,  # RESC other than SG
         }
 
     if "investments" not in st.session_state:
-        st.session_state.investments = []
-
-    if "tax_params" not in st.session_state:
-        # User-supplied FY26+ parameters; NO guessing/hardcoding.
-        st.session_state.tax_params = {
-            "income_tax_brackets": [
-                {"from": 0.0, "to": 0.0, "rate": 0.0, "base_tax": 0.0},
-            ],
-            "medicare": {
-                "single_lower": 0.0,
-                "single_upper": 0.0,
-                "family_lower_base": 0.0,
-                "family_upper_base": 0.0,
-                "family_lower_per_child": 0.0,
-                "family_upper_per_child": 0.0,
-            },
-            "super": {
-                "sg_rate": 0.0,  # e.g., 0.12 for 12%
-                "concessional_cap": 0.0,
-                "contributions_tax_rate": 0.15,  # user-editable
-            },
-            "div293": {
-                "enabled": True,
-                "threshold": 0.0,
-                "rate": 0.0,
-                "income_definition_components": {
-                    "include_taxable_income": True,
-                    "include_reportable_fringe_benefits": True,
-                    "include_net_investment_losses": True,
-                    "include_concessional_contributions": True,
-                    "include_reportable_employer_super": True,  # RESC
-                },
-            },
-        }
+        st.session_state.investments = []  # list of dicts
 
     if "scenarios" not in st.session_state:
-        st.session_state.scenarios = {}  # name -> payload dict
+        st.session_state.scenarios = {}  # name -> payload
 
 
-def _snapshot_current_inputs() -> Dict[str, Any]:
+def _snapshot() -> Dict[str, Any]:
     return {
         "household": copy.deepcopy(st.session_state.household),
         "person_a": copy.deepcopy(st.session_state.person_a),
         "person_b": copy.deepcopy(st.session_state.person_b),
         "investments": copy.deepcopy(st.session_state.investments),
-        "tax_params": copy.deepcopy(st.session_state.tax_params),
     }
 
 
@@ -134,618 +77,457 @@ def _load_snapshot(payload: Dict[str, Any]) -> None:
     st.session_state.person_a = copy.deepcopy(payload.get("person_a", st.session_state.person_a))
     st.session_state.person_b = copy.deepcopy(payload.get("person_b", st.session_state.person_b))
     st.session_state.investments = copy.deepcopy(payload.get("investments", st.session_state.investments))
-    st.session_state.tax_params = copy.deepcopy(payload.get("tax_params", st.session_state.tax_params))
 
 
-def _investment_allocations(is_couple: bool) -> pd.DataFrame:
-    rows = []
-    for inv in st.session_state.investments:
-        inv_type = inv.get("type", "Other")
-        name = inv.get("name", "Investment")
-        gross = float(inv.get("gross_income_annual", 0.0))
-        interest = float(inv.get("interest_deductible_annual", 0.0))
-        other_ded = float(inv.get("other_deductible_annual", 0.0))
-        net_taxable = gross - interest - other_ded
+# -----------------------------
+# Calculated (inputs-only) helpers
+# -----------------------------
+def calc_uplift_annual(base_salary_annual: float, uplift_pct: float, weeks_away: int) -> float:
+    # uplift_pct provided as percent (e.g., 20 = 20%)
+    pct = max(0.0, uplift_pct) / 100.0
+    w = min(max(int(weeks_away), 0), 52)
+    return float(base_salary_annual) * pct * (w / 52.0)
 
-        if is_couple:
-            a_pct = float(inv.get("ownership_a_pct", 50.0)) / 100.0
-            b_pct = 1.0 - a_pct
-        else:
-            a_pct = 1.0
-            b_pct = 0.0
 
-        rows.append(
-            {
-                "Type": inv_type,
-                "Name": name,
-                "Gross income (annual)": gross,
-                "Deductible interest (annual)": interest,
-                "Other deductions (annual)": other_ded,
-                "Net taxable (annual)": net_taxable,
-                "Allocated to A (gross)": gross * a_pct,
-                "Allocated to B (gross)": gross * b_pct,
-                "Allocated to A (net taxable)": net_taxable * a_pct,
-                "Allocated to B (net taxable)": net_taxable * b_pct,
-                "A ownership %": a_pct * 100.0,
-            }
+def calc_sg_annual(base_salary_annual: float, salary_includes_sg: bool, uplift_annual: float, uplift_sg_applies: bool) -> float:
+    """
+    Inputs-only SG estimate.
+    - OTE base assumed = base salary (and optionally uplift).
+    - If user says salary includes SG (total package), we back out an OTE estimate:
+        OTE ≈ package / (1 + SG_RATE)
+      This is an assumption; you can later adjust if you prefer a different convention.
+    """
+    base = float(base_salary_annual)
+
+    if salary_includes_sg and (1.0 + SG_RATE) > 0:
+        base_ote = base / (1.0 + SG_RATE)
+    else:
+        base_ote = base
+
+    ote = base_ote + (float(uplift_annual) if uplift_sg_applies else 0.0)
+    return max(0.0, ote) * SG_RATE
+
+
+# -----------------------------
+# UI helpers
+# -----------------------------
+def money_input(label: str, key: str, value: float = 0.0, step: float = 1000.0, help_text: str | None = None) -> float:
+    return float(
+        st.number_input(
+            label,
+            min_value=0.0,
+            value=float(value),
+            step=float(step),
+            format="%.2f",
+            key=key,
+            help=help_text,
         )
+    )
 
-    if not rows:
-        return pd.DataFrame(
-            columns=[
-                "Type",
-                "Name",
-                "Gross income (annual)",
-                "Deductible interest (annual)",
-                "Other deductions (annual)",
-                "Net taxable (annual)",
-                "Allocated to A (gross)",
-                "Allocated to B (gross)",
-                "Allocated to A (net taxable)",
-                "Allocated to B (net taxable)",
-                "A ownership %",
-            ]
+
+def int_input(label: str, key: str, value: int = 0, min_value: int = 0, max_value: int = 52, help_text: str | None = None) -> int:
+    return int(
+        st.number_input(
+            label,
+            min_value=min_value,
+            max_value=max_value,
+            value=int(value),
+            step=1,
+            key=key,
+            help=help_text,
         )
+    )
 
-    return pd.DataFrame(rows)
+
+def pct_input(label: str, key: str, value: float = 0.0, help_text: str | None = None) -> float:
+    return float(
+        st.number_input(
+            label,
+            min_value=0.0,
+            max_value=300.0,
+            value=float(value),
+            step=1.0,
+            format="%.1f",
+            key=key,
+            help=help_text,
+        )
+    )
+
+
+def render_person_block(person_key: str, title: str) -> None:
+    p = st.session_state[person_key]
+
+    with st.container():
+        st.subheader(title)
+
+        # Row 1: core income
+        c1, c2, c3 = st.columns([1.3, 1.0, 1.0])
+        with c1:
+            p["name"] = st.text_input("Label", value=p.get("name", title), key=f"{person_key}_name")
+            p["base_salary_annual"] = money_input(
+                "Base salary (annual, $)",
+                key=f"{person_key}_base_salary",
+                value=p.get("base_salary_annual", 0.0),
+                step=2000.0,
+            )
+        with c2:
+            p["weeks_away"] = int_input(
+                "Weeks working away (0–52)",
+                key=f"{person_key}_weeks_away",
+                value=p.get("weeks_away", 0),
+                min_value=0,
+                max_value=52,
+                help_text="Used for remote allowance calculation.",
+            )
+            p["uplift_pct"] = pct_input(
+                "Remote allowance uplift (%)",
+                key=f"{person_key}_uplift_pct",
+                value=p.get("uplift_pct", 0.0),
+                help_text="Percent uplift applied to base salary for weeks away.",
+            )
+        with c3:
+            uplift_annual = calc_uplift_annual(p["base_salary_annual"], p["uplift_pct"], p["weeks_away"])
+            st.metric("Derived uplift (annual)", f"${uplift_annual:,.0f}")
+            p["uplift_sg_applies"] = st.toggle(
+                "SG applies to uplift",
+                value=bool(p.get("uplift_sg_applies", False)),
+                key=f"{person_key}_uplift_sg",
+                help="If ON, uplift is treated as OTE for SG purposes.",
+            )
+
+        # Row 2: super + div293 supporting inputs
+        st.markdown("**Super & Div 293 supporting inputs**")
+        c4, c5, c6 = st.columns([1.0, 1.0, 1.0])
+        with c4:
+            sg_annual = calc_sg_annual(
+                base_salary_annual=p["base_salary_annual"],
+                salary_includes_sg=bool(p.get("salary_includes_sg", False)),
+                uplift_annual=uplift_annual,
+                uplift_sg_applies=bool(p.get("uplift_sg_applies", False)),
+            )
+            st.metric("Super Guarantee (annual, 12%)", f"${sg_annual:,.0f}")
+        with c5:
+            p["extra_concessional_annual"] = money_input(
+                "Extra concessional contributions (annual, $)",
+                key=f"{person_key}_extra_concessional",
+                value=p.get("extra_concessional_annual", 0.0),
+                step=500.0,
+                help_text="Salary sacrifice / personal deductible concessional contributions (in addition to SG).",
+            )
+        with c6:
+            p["reportable_fringe_benefits_annual"] = money_input(
+                "Reportable fringe benefits (annual, $)",
+                key=f"{person_key}_rfb",
+                value=p.get("reportable_fringe_benefits_annual", 0.0),
+                step=500.0,
+                help_text="Used for Div 293 income definition (if applicable).",
+            )
+
+        # Advanced (kept minimal, hidden by default)
+        with st.expander("Advanced (rarely needed)", expanded=False):
+            c7, c8 = st.columns([1.0, 1.0])
+            with c7:
+                p["resident_for_tax"] = st.toggle(
+                    "Australian resident for tax purposes",
+                    value=bool(p.get("resident_for_tax", True)),
+                    key=f"{person_key}_resident",
+                )
+            with c8:
+                p["salary_includes_sg"] = st.toggle(
+                    "Salary figure includes SG (total package)",
+                    value=bool(p.get("salary_includes_sg", False)),
+                    key=f"{person_key}_includes_sg",
+                    help="If ON, SG is backed out from the base salary to estimate OTE for SG.",
+                )
+
+        # Save back
+        st.session_state[person_key] = p
 
 
 # -----------------------------
 # App
 # -----------------------------
-st.set_page_config(page_title="Family Tax + Negative Gearing (AU) — Inputs", layout="wide")
+st.set_page_config(page_title="Income Calculator (AU) — Inputs", layout="wide")
 _ensure_state()
 
-st.title("Inputs — AU Family Tax + Investments (FY2025–26 onwards)")
-st.caption(
-    "This page collects the *minimum* inputs needed to later compute your requested key metrics. "
-    "No tax rates/thresholds are assumed — you must enter FY26+ parameters in **Tax settings**."
-)
+# Sidebar: scenario management
+with st.sidebar:
+    st.title("Scenarios")
 
-with st.expander("Scenario management", expanded=True):
-    left, mid, right = st.columns([2, 2, 3])
+    scenario_name = st.text_input("Scenario name", value="Baseline", key="scenario_name")
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        if st.button("Save", use_container_width=True):
+            st.session_state.scenarios[scenario_name] = _snapshot()
+            st.success("Saved")
 
-    with left:
-        scenario_name = st.text_input("Scenario name", value="Baseline", key="scenario_name_input")
-        if st.button("Save / overwrite scenario", use_container_width=True):
-            st.session_state.scenarios[scenario_name] = _snapshot_current_inputs()
-            st.success("Saved scenario: {}".format(scenario_name))
-
-    with mid:
-        scenario_choices = sorted(list(st.session_state.scenarios.keys()))
-        selected = st.selectbox("Load scenario", options=["(select)"] + scenario_choices, index=0)
-        if st.button("Load selected", use_container_width=True, disabled=(selected == "(select)")):
-            _load_snapshot(st.session_state.scenarios[selected])
-            st.success("Loaded scenario: {}".format(selected))
+    with col_s2:
+        scenario_keys = sorted(st.session_state.scenarios.keys())
+        sel = st.selectbox("Load", options=["(select)"] + scenario_keys, index=0, key="scenario_load_sel")
+        if st.button("Load selected", use_container_width=True, disabled=(sel == "(select)")):
+            _load_snapshot(st.session_state.scenarios[sel])
+            st.success("Loaded")
             st.rerun()
 
-    with right:
-        delete_sel = st.selectbox(
-            "Delete scenario",
-            options=["(select)"] + scenario_choices,
+    if st.session_state.scenarios:
+        del_sel = st.selectbox(
+            "Delete",
+            options=["(select)"] + sorted(st.session_state.scenarios.keys()),
             index=0,
-            key="delete_scenario_sel",
+            key="scenario_delete_sel",
         )
-        if st.button("Delete", use_container_width=True, disabled=(delete_sel == "(select)")):
-            del st.session_state.scenarios[delete_sel]
-            st.warning("Deleted scenario: {}".format(delete_sel))
+        if st.button("Delete selected", use_container_width=True, disabled=(del_sel == "(select)")):
+            del st.session_state.scenarios[del_sel]
+            st.warning("Deleted")
             st.rerun()
 
-st.divider()
+    st.divider()
+    st.caption("Inputs only. Tax rates/thresholds will be sourced from official ATO material in backend logic.")
 
-# -----------------------------
-# Household / Year
-# -----------------------------
+
+st.title("Inputs")
+st.caption("Clean, minimal inputs required to calculate your key metrics (individual + household).")
+
+# Household section
 with st.expander("Household", expanded=True):
-    col1, col2, col3 = st.columns([1.2, 1.2, 1.2])
+    c1, c2, c3, c4 = st.columns([1.0, 1.0, 1.0, 1.2])
 
-    with col1:
+    with c1:
         year_opts = ["2025–26", "2026–27", "2027–28", "2028–29", "2029–30"]
         current = st.session_state.household.get("tax_year_label", "2025–26")
         if current not in year_opts:
             current = "2025–26"
         st.session_state.household["tax_year_label"] = st.selectbox(
-            "Tax year label (FY)",
+            "Tax year (FY)",
             options=year_opts,
             index=year_opts.index(current),
-            help="Label only. Actual rates/thresholds must be entered under Tax settings.",
         )
 
-    with col2:
+    with c2:
         st.session_state.household["is_couple"] = st.toggle(
-            "Couple mode (Person A + Person B)",
-            value=bool(st.session_state.household["is_couple"]),
+            "Couple mode (A + B)",
+            value=bool(st.session_state.household.get("is_couple", True)),
         )
 
-    with col3:
-        st.session_state.household["dependant_children"] = int(
-            st.number_input(
-                "Dependent children (for Medicare family thresholds)",
-                min_value=0,
-                value=int(st.session_state.household["dependant_children"]),
-                step=1,
+    with c3:
+        st.session_state.household["dependant_children"] = int_input(
+            "Dependent children",
+            key="dependant_children",
+            value=int(st.session_state.household.get("dependant_children", 0)),
+            min_value=0,
+            max_value=10,
+        )
+
+    with c4:
+        # Optional MLS inputs (kept compact). If you decide later not to model MLS, we can remove these.
+        st.markdown("**Private hospital cover (MLS)**")
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            st.session_state.household["has_private_hospital_cover_a"] = st.checkbox(
+                "A covered",
+                value=bool(st.session_state.household.get("has_private_hospital_cover_a", False)),
             )
-        )
+        with cc2:
+            st.session_state.household["has_private_hospital_cover_b"] = st.checkbox(
+                "B covered",
+                value=bool(st.session_state.household.get("has_private_hospital_cover_b", False)),
+                disabled=not bool(st.session_state.household.get("is_couple", True)),
+            )
 
-is_couple = bool(st.session_state.household["is_couple"])
+is_couple = bool(st.session_state.household.get("is_couple", True))
 
 st.divider()
 
+# People section
+st.header("People")
+col_left, col_right = st.columns(2, gap="large")
 
-# -----------------------------
-# People inputs
-# -----------------------------
-def render_person_inputs(person_key: str, title: str) -> None:
-    p = st.session_state[person_key]
+with col_left:
+    render_person_block("person_a", "Person A")
 
-    with st.expander(title, expanded=True):
-        c1, c2, c3 = st.columns([1.2, 1.2, 1.2])
-
-        with c1:
-            p["name"] = st.text_input("Label", value=p.get("name", title), key="{}_name".format(person_key))
-            p["resident_for_tax"] = st.toggle(
-                "Australian resident for tax purposes",
-                value=bool(p.get("resident_for_tax", True)),
-                key="{}_resident".format(person_key),
-            )
-
-        with c2:
-            p["base_salary_annual"] = float(
-                st.number_input(
-                    "Base salary (annual, $)",
-                    min_value=0.0,
-                    value=float(p.get("base_salary_annual", 0.0)),
-                    step=1000.0,
-                    format="%.2f",
-                    key="{}_base_salary".format(person_key),
-                    help="Annual gross base salary. If you want weekly/fortnightly later, we can add that.",
-                )
-            )
-            p["salary_includes_sg"] = st.toggle(
-                "Salary figure includes SG",
-                value=bool(p.get("salary_includes_sg", False)),
-                key="{}_salary_includes_sg".format(person_key),
-                help="If ON, base salary is treated as total package including SG (so SG is backed out).",
-            )
-
-        with c3:
-            p["remote_uplift_taxable_annual"] = float(
-                st.number_input(
-                    "Remote work allowance / uplift (taxable, annual $)",
-                    min_value=0.0,
-                    value=float(p.get("remote_uplift_taxable_annual", 0.0)),
-                    step=500.0,
-                    format="%.2f",
-                    key="{}_remote_uplift".format(person_key),
-                    help="For v1 inputs: enter the final taxable annual amount. If you want rule-based calculation, we'll add inputs once you provide the formula.",
-                )
-            )
-            p["remote_uplift_sg_applies"] = st.toggle(
-                "SG applies to uplift",
-                value=bool(p.get("remote_uplift_sg_applies", False)),
-                key="{}_remote_uplift_sg".format(person_key),
-                help="Some allowances are ordinary time earnings (OTE) and may attract SG. Choose what you want applied.",
-            )
-
-        st.markdown("**Super + Div 293 supporting inputs (minimal)**")
-        c4, c5, c6 = st.columns([1.2, 1.2, 1.2])
-
-        with c4:
-            p["extra_concessional_annual"] = float(
-                st.number_input(
-                    "Extra concessional contributions (annual $)",
-                    min_value=0.0,
-                    value=float(p.get("extra_concessional_annual", 0.0)),
-                    step=500.0,
-                    format="%.2f",
-                    key="{}_extra_concessional".format(person_key),
-                    help="Salary sacrifice / personal deductible concessional contributions (in addition to SG).",
-                )
-            )
-
-        with c5:
-            p["reportable_fringe_benefits_annual"] = float(
-                st.number_input(
-                    "Reportable fringe benefits (annual $)",
-                    min_value=0.0,
-                    value=float(p.get("reportable_fringe_benefits_annual", 0.0)),
-                    step=500.0,
-                    format="%.2f",
-                    key="{}_rfb".format(person_key),
-                    help="Only needed if your Div 293 income definition includes it. Set to 0 if none.",
-                )
-            )
-
-        with c6:
-            p["reportable_employer_super_annual"] = float(
-                st.number_input(
-                    "Reportable employer super (RESC) excluding SG (annual $)",
-                    min_value=0.0,
-                    value=float(p.get("reportable_employer_super_annual", 0.0)),
-                    step=500.0,
-                    format="%.2f",
-                    key="{}_resc".format(person_key),
-                    help="Only needed if your Div 293 definition includes it. Set to 0 if none.",
-                )
-            )
-
-    st.session_state[person_key] = p
-
-
-colA, colB = st.columns(2)
-with colA:
-    render_person_inputs("person_a", "Person A — income & super inputs")
-
-with colB:
+with col_right:
     if is_couple:
-        render_person_inputs("person_b", "Person B — income & super inputs")
+        render_person_block("person_b", "Person B")
     else:
-        st.info("Couple mode is OFF — Person B inputs hidden. Investments will allocate 100% to Person A.")
+        st.subheader("Person B")
+        st.info("Couple mode is OFF — Person B inputs hidden.")
 
 st.divider()
 
-# -----------------------------
-# Investments
-# -----------------------------
-with st.expander("Investments (for investment income + negative gearing)", expanded=True):
-    st.caption(
-        "Minimal fields per investment: gross income + deductible interest + other deductions + ownership split. "
-        "This is enough to later compute taxable income before/after negative gearing, and gross investment income."
-    )
-
-    add_col1, add_col2, add_col3 = st.columns([1.3, 1.3, 1.4])
-    with add_col1:
+# Investments section
+with st.expander("Investments", expanded=True):
+    # Add investment row
+    add1, add2, add3 = st.columns([1.2, 1.6, 1.0])
+    with add1:
         new_type = st.selectbox(
-            "Add investment type",
+            "Type",
             ["Investment property", "Shares/ETFs", "Cash/Term deposit", "Other"],
             key="new_inv_type",
         )
-    with add_col2:
+    with add2:
         new_name = st.text_input("Name", value="", placeholder="e.g., IP - Parramatta", key="new_inv_name")
-    with add_col3:
-        if st.button("Add investment", use_container_width=True):
+    with add3:
+        if st.button("Add", use_container_width=True):
             inv_id = str(uuid.uuid4())[:8]
-            base = {
-                "id": inv_id,
+            inv = {
+                "id": inv_id,  # stored internally; not displayed
                 "type": new_type,
-                "name": new_name.strip() if new_name.strip() else "{} ({})".format(new_type, inv_id),
+                "name": new_name.strip() if new_name.strip() else f"{new_type}",
+                "ownership_a_pct": 50.0 if is_couple else 100.0,
                 "gross_income_annual": 0.0,
                 "interest_deductible_annual": 0.0,
                 "other_deductible_annual": 0.0,
-                "ownership_a_pct": 50.0 if is_couple else 100.0,
+                # property-specific
+                "rent_per_week": 0.0,
+                "vacancy_weeks": 0,
             }
-
-            if new_type == "Investment property":
-                base.update({"rent_per_week": 0.0, "vacancy_weeks": 0, "other_income_annual": 0.0})
-            elif new_type == "Shares/ETFs":
-                base.update({"dividends_annual": 0.0, "other_income_annual": 0.0})
-            elif new_type == "Cash/Term deposit":
-                base.update({"interest_income_annual": 0.0})
-
-            st.session_state.investments.append(base)
-            st.success("Added: {}".format(base["name"]))
+            st.session_state.investments.append(inv)
+            st.success("Added investment")
             st.rerun()
 
-    if len(st.session_state.investments) == 0:
-        st.warning("No investments added yet.")
+    if not st.session_state.investments:
+        st.caption("No investments added.")
     else:
         for idx, inv in enumerate(list(st.session_state.investments)):
-            inv_key = "inv_{}".format(inv["id"])
-
             with st.container():
                 st.markdown("---")
-                top1, top2, top3, top4 = st.columns([2.2, 1.2, 1.1, 1.1])
+                top1, top2, top3, top4 = st.columns([1.8, 1.2, 1.0, 0.7])
 
                 with top1:
-                    inv["name"] = st.text_input(
-                        "Investment name",
-                        value=inv.get("name", ""),
-                        key="{}_name".format(inv_key),
-                    )
-                    st.caption("Type: **{}**  |  ID: `{}`".format(inv.get("type", "Other"), inv.get("id", "")))
+                    inv["name"] = st.text_input("Name", value=inv.get("name", ""), key=f"inv_{inv['id']}_name")
 
                 with top2:
+                    inv["type"] = st.selectbox(
+                        "Type",
+                        ["Investment property", "Shares/ETFs", "Cash/Term deposit", "Other"],
+                        index=["Investment property", "Shares/ETFs", "Cash/Term deposit", "Other"].index(inv.get("type", "Other")),
+                        key=f"inv_{inv['id']}_type",
+                    )
+
+                with top3:
                     if is_couple:
-                        inv["ownership_a_pct"] = _pct_input(
-                            "Person A ownership %",
-                            key="{}_own_a".format(inv_key),
-                            value=float(inv.get("ownership_a_pct", 50.0)),
-                            help_="Person B ownership is the remainder (100% - A%).",
+                        inv["ownership_a_pct"] = float(
+                            st.number_input(
+                                "A ownership (%)",
+                                min_value=0.0,
+                                max_value=100.0,
+                                value=float(inv.get("ownership_a_pct", 50.0)),
+                                step=1.0,
+                                format="%.0f",
+                                key=f"inv_{inv['id']}_own_a",
+                            )
                         )
                     else:
                         inv["ownership_a_pct"] = 100.0
-                        st.metric("Ownership", "100% to Person A")
-
-                with top3:
-                    if st.button("Remove", key="{}_remove".format(inv_key), use_container_width=True):
-                        st.session_state.investments = [
-                            x for x in st.session_state.investments if x.get("id") != inv.get("id")
-                        ]
-                        st.warning("Removed: {}".format(inv.get("name", "(investment)")))
-                        st.rerun()
+                        st.metric("Ownership", "100% A")
 
                 with top4:
-                    if is_couple:
-                        a = float(inv.get("ownership_a_pct", 50.0))
-                        if a < 0.0 or a > 100.0:
-                            st.error("Ownership % must be 0–100")
-                        else:
-                            st.metric("Person B ownership %", "{:.0f}%".format(100.0 - a))
+                    if st.button("Remove", key=f"inv_{inv['id']}_remove", use_container_width=True):
+                        st.session_state.investments = [x for x in st.session_state.investments if x.get("id") != inv.get("id")]
+                        st.rerun()
 
-                inv_type = inv.get("type", "Other")
-
-                if inv_type == "Investment property":
-                    c1, c2, c3 = st.columns([1.2, 1.0, 1.2])
+                # Inputs aligned by type
+                if inv["type"] == "Investment property":
+                    c1, c2, c3, c4 = st.columns([1.0, 1.0, 1.0, 1.0])
                     with c1:
-                        inv["rent_per_week"] = float(
-                            st.number_input(
-                                "Rent ($/week)",
-                                min_value=0.0,
-                                value=float(inv.get("rent_per_week", 0.0)),
-                                step=10.0,
-                                format="%.2f",
-                                key="{}_rent_w".format(inv_key),
-                            )
+                        inv["rent_per_week"] = money_input(
+                            "Rent ($/week)",
+                            key=f"inv_{inv['id']}_rent",
+                            value=float(inv.get("rent_per_week", 0.0)),
+                            step=10.0,
                         )
                     with c2:
-                        inv["vacancy_weeks"] = int(
-                            st.number_input(
-                                "Vacancy (weeks/year)",
-                                min_value=0,
-                                max_value=52,
-                                value=int(inv.get("vacancy_weeks", 0)),
-                                step=1,
-                                key="{}_vac_w".format(inv_key),
-                            )
+                        inv["vacancy_weeks"] = int_input(
+                            "Vacancy (weeks)",
+                            key=f"inv_{inv['id']}_vac",
+                            value=int(inv.get("vacancy_weeks", 0)),
+                            min_value=0,
+                            max_value=52,
                         )
                     with c3:
-                        inv["other_income_annual"] = float(
-                            st.number_input(
-                                "Other property income (annual $)",
-                                min_value=0.0,
-                                value=float(inv.get("other_income_annual", 0.0)),
-                                step=100.0,
-                                format="%.2f",
-                                key="{}_other_income".format(inv_key),
-                                help="Optional: e.g., laundry, parking, insurance recovery. Set 0 if none.",
-                            )
+                        inv["interest_deductible_annual"] = money_input(
+                            "Interest (annual, $)",
+                            key=f"inv_{inv['id']}_int",
+                            value=float(inv.get("interest_deductible_annual", 0.0)),
+                            step=200.0,
+                        )
+                    with c4:
+                        inv["other_deductible_annual"] = money_input(
+                            "Other deductible (annual, $)",
+                            key=f"inv_{inv['id']}_other_ded",
+                            value=float(inv.get("other_deductible_annual", 0.0)),
+                            step=200.0,
                         )
 
-                    d1, d2 = st.columns(2)
-                    with d1:
-                        inv["interest_deductible_annual"] = float(
-                            st.number_input(
-                                "Interest (annual $)",
-                                min_value=0.0,
-                                value=float(inv.get("interest_deductible_annual", 0.0)),
-                                step=100.0,
-                                format="%.2f",
-                                key="{}_int".format(inv_key),
-                            )
-                        )
-                    with d2:
-                        inv["other_deductible_annual"] = float(
-                            st.number_input(
-                                "Other deductible expenses (annual $)",
-                                min_value=0.0,
-                                value=float(inv.get("other_deductible_annual", 0.0)),
-                                step=100.0,
-                                format="%.2f",
-                                key="{}_other_ded".format(inv_key),
-                                help="All other deductible holding costs excluding interest. Depreciation is not included unless you later ask for it.",
-                            )
-                        )
+                    # derive gross income annual (inputs-only)
+                    weeks_rented = max(0, 52 - int(inv["vacancy_weeks"]))
+                    inv["gross_income_annual"] = float(inv["rent_per_week"]) * float(weeks_rented)
 
-                    gross_rent = inv["rent_per_week"] * float(max(0, 52 - inv["vacancy_weeks"]))
-                    inv["gross_income_annual"] = float(gross_rent + float(inv.get("other_income_annual", 0.0)))
-                    st.caption("Derived gross property income (annual): ${:,.2f}".format(inv["gross_income_annual"]))
-
-                elif inv_type == "Shares/ETFs":
-                    c1, c2 = st.columns(2)
+                elif inv["type"] == "Shares/ETFs":
+                    c1, c2, c3 = st.columns([1.2, 1.0, 1.0])
                     with c1:
-                        inv["dividends_annual"] = _money_input(
-                            "Dividends (annual $)",
-                            key="{}_div".format(inv_key),
-                            value=float(inv.get("dividends_annual", 0.0)),
+                        inv["gross_income_annual"] = money_input(
+                            "Gross income (annual, $)",
+                            key=f"inv_{inv['id']}_gross",
+                            value=float(inv.get("gross_income_annual", 0.0)),
+                            step=200.0,
+                            help_text="Dividends/distributions/interest. (Franking credits & CGT can be added later if needed.)",
                         )
                     with c2:
-                        inv["other_income_annual"] = _money_input(
-                            "Other taxable income (annual $)",
-                            key="{}_oth_inc".format(inv_key),
-                            value=float(inv.get("other_income_annual", 0.0)),
-                            help_="Optional: distributions, interest, etc. Franking credits not modelled in v1 inputs unless you ask.",
-                        )
-
-                    d1, d2 = st.columns(2)
-                    with d1:
-                        inv["interest_deductible_annual"] = _money_input(
-                            "Deductible interest (annual $)",
-                            key="{}_sh_int".format(inv_key),
+                        inv["interest_deductible_annual"] = money_input(
+                            "Deductible interest (annual, $)",
+                            key=f"inv_{inv['id']}_sh_int",
                             value=float(inv.get("interest_deductible_annual", 0.0)),
-                            help_="E.g., margin loan interest. Set 0 if none.",
+                            step=200.0,
                         )
-                    with d2:
-                        inv["other_deductible_annual"] = _money_input(
-                            "Other deductible costs (annual $)",
-                            key="{}_sh_oth_ded".format(inv_key),
+                    with c3:
+                        inv["other_deductible_annual"] = money_input(
+                            "Other deductible (annual, $)",
+                            key=f"inv_{inv['id']}_sh_other",
                             value=float(inv.get("other_deductible_annual", 0.0)),
-                            help_="E.g., investment expenses. CGT not modelled in v1 inputs unless you ask.",
+                            step=200.0,
                         )
 
-                    inv["gross_income_annual"] = float(inv.get("dividends_annual", 0.0) + inv.get("other_income_annual", 0.0))
-
-                elif inv_type == "Cash/Term deposit":
-                    inv["interest_income_annual"] = _money_input(
-                        "Interest income (annual $)",
-                        key="{}_cash_int".format(inv_key),
-                        value=float(inv.get("interest_income_annual", 0.0)),
-                    )
-                    inv["gross_income_annual"] = float(inv.get("interest_income_annual", 0.0))
-                    inv["interest_deductible_annual"] = 0.0
-                    inv["other_deductible_annual"] = 0.0
+                elif inv["type"] == "Cash/Term deposit":
+                    c1, c2 = st.columns([1.2, 1.2])
+                    with c1:
+                        inv["gross_income_annual"] = money_input(
+                            "Interest income (annual, $)",
+                            key=f"inv_{inv['id']}_cash_int",
+                            value=float(inv.get("gross_income_annual", 0.0)),
+                            step=100.0,
+                        )
+                    with c2:
+                        st.caption("No deductions captured for cash (by default).")
+                        inv["interest_deductible_annual"] = 0.0
+                        inv["other_deductible_annual"] = 0.0
 
                 else:
-                    c1, c2, c3 = st.columns(3)
+                    c1, c2, c3 = st.columns([1.2, 1.0, 1.0])
                     with c1:
-                        inv["gross_income_annual"] = _money_input(
-                            "Gross taxable investment income (annual $)",
-                            key="{}_gross".format(inv_key),
+                        inv["gross_income_annual"] = money_input(
+                            "Gross income (annual, $)",
+                            key=f"inv_{inv['id']}_o_gross",
                             value=float(inv.get("gross_income_annual", 0.0)),
-                            help_="Enter the taxable gross income for this investment.",
+                            step=200.0,
                         )
                     with c2:
-                        inv["interest_deductible_annual"] = _money_input(
-                            "Deductible interest (annual $)",
-                            key="{}_o_int".format(inv_key),
+                        inv["interest_deductible_annual"] = money_input(
+                            "Deductible interest (annual, $)",
+                            key=f"inv_{inv['id']}_o_int",
                             value=float(inv.get("interest_deductible_annual", 0.0)),
+                            step=200.0,
                         )
                     with c3:
-                        inv["other_deductible_annual"] = _money_input(
-                            "Other deductible expenses (annual $)",
-                            key="{}_o_ded".format(inv_key),
+                        inv["other_deductible_annual"] = money_input(
+                            "Other deductible (annual, $)",
+                            key=f"inv_{inv['id']}_o_other",
                             value=float(inv.get("other_deductible_annual", 0.0)),
+                            step=200.0,
                         )
 
                 st.session_state.investments[idx] = inv
 
-        st.subheader("Investment summary (input-derived)")
-        df = _investment_allocations(is_couple=is_couple)
-        st.dataframe(df, use_container_width=True, hide_index=True)
-
-        gross_household = float(df["Gross income (annual)"].sum()) if not df.empty else 0.0
-        net_taxable_household = float(df["Net taxable (annual)"].sum()) if not df.empty else 0.0
-        st.metric("Household gross investment income (annual)", "${:,.2f}".format(gross_household))
-        st.metric("Household net taxable investment amount (annual)", "${:,.2f}".format(net_taxable_household))
-
-st.divider()
-
-# -----------------------------
-# Tax settings (must be user supplied)
-# -----------------------------
-with st.expander("Tax settings (FY2025–26 onwards) — REQUIRED for accuracy", expanded=False):
-    st.warning("No FY26+ tax rates/thresholds are assumed. Enter the exact values you want used for the selected tax year.")
-
-    tp = st.session_state.tax_params
-
-    st.markdown("### Income tax (resident) brackets")
-    st.caption(
-        "Enter resident tax brackets for the selected year. "
-        "Use **from/to** thresholds and the marginal **rate**. "
-        "Base tax can be entered explicitly (recommended for accuracy) or left 0 for now."
-    )
-
-    brackets_df = pd.DataFrame(tp.get("income_tax_brackets", []))
-    if brackets_df.empty:
-        brackets_df = pd.DataFrame([{"from": 0.0, "to": 0.0, "rate": 0.0, "base_tax": 0.0}])
-
-    edited = st.data_editor(
-        brackets_df,
-        use_container_width=True,
-        num_rows="dynamic",
-        column_config={
-            "from": st.column_config.NumberColumn("From ($)", min_value=0.0, format="%.2f", step=1000.0),
-            "to": st.column_config.NumberColumn("To ($)", min_value=0.0, format="%.2f", step=1000.0),
-            "rate": st.column_config.NumberColumn("Rate (e.g., 0.30)", min_value=0.0, max_value=1.0, format="%.4f", step=0.01),
-            "base_tax": st.column_config.NumberColumn("Base tax at 'From' ($)", min_value=0.0, format="%.2f", step=100.0),
-        },
-        hide_index=True,
-    )
-    tp["income_tax_brackets"] = edited.to_dict(orient="records")
-
-    st.markdown("### Medicare levy thresholds (family-aware)")
-    m = tp["medicare"]
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        m["single_lower"] = _money_input("Single lower threshold ($)", "med_single_lower", m.get("single_lower", 0.0))
-        m["single_upper"] = _money_input("Single upper threshold ($)", "med_single_upper", m.get("single_upper", 0.0))
-    with c2:
-        m["family_lower_base"] = _money_input("Family lower base ($)", "med_family_lower", m.get("family_lower_base", 0.0))
-        m["family_upper_base"] = _money_input("Family upper base ($)", "med_family_upper", m.get("family_upper_base", 0.0))
-    with c3:
-        m["family_lower_per_child"] = _money_input("Family lower per child ($)", "med_family_lower_child", m.get("family_lower_per_child", 0.0))
-        m["family_upper_per_child"] = _money_input("Family upper per child ($)", "med_family_upper_child", m.get("family_upper_per_child", 0.0))
-    tp["medicare"] = m
-
-    st.markdown("### Super settings")
-    s = tp["super"]
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        s["sg_rate"] = float(
-            st.number_input(
-                "SG rate (e.g., 0.12)",
-                min_value=0.0,
-                max_value=0.30,
-                value=float(s.get("sg_rate", 0.0)),
-                step=0.005,
-                format="%.4f",
-                key="sg_rate",
-            )
-        )
-    with c2:
-        s["concessional_cap"] = _money_input("Concessional contributions cap ($)", "concessional_cap", s.get("concessional_cap", 0.0))
-    with c3:
-        s["contributions_tax_rate"] = float(
-            st.number_input(
-                "Contributions tax rate in fund (e.g., 0.15)",
-                min_value=0.0,
-                max_value=0.30,
-                value=float(s.get("contributions_tax_rate", 0.15)),
-                step=0.01,
-                format="%.4f",
-                key="contrib_tax_rate",
-            )
-        )
-    tp["super"] = s
-
-    st.markdown("### Division 293 settings")
-    d = tp["div293"]
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        d["enabled"] = st.toggle("Enable Div 293", value=bool(d.get("enabled", True)), key="div293_enabled")
-    with c2:
-        d["threshold"] = _money_input("Div 293 threshold ($)", "div293_threshold", d.get("threshold", 0.0))
-    with c3:
-        d["rate"] = float(
-            st.number_input(
-                "Div 293 rate (e.g., 0.15)",
-                min_value=0.0,
-                max_value=0.30,
-                value=float(d.get("rate", 0.0)),
-                step=0.01,
-                format="%.4f",
-                key="div293_rate",
-            )
-        )
-
-    st.markdown("**Div 293 income definition components (choose what you want included)**")
-    comp = d["income_definition_components"]
-    cc1, cc2, cc3 = st.columns(3)
-    with cc1:
-        comp["include_taxable_income"] = st.checkbox("Include taxable income", value=bool(comp.get("include_taxable_income", True)))
-        comp["include_net_investment_losses"] = st.checkbox("Include net investment losses", value=bool(comp.get("include_net_investment_losses", True)))
-    with cc2:
-        comp["include_concessional_contributions"] = st.checkbox("Include concessional contributions", value=bool(comp.get("include_concessional_contributions", True)))
-        comp["include_reportable_employer_super"] = st.checkbox("Include reportable employer super (RESC)", value=bool(comp.get("include_reportable_employer_super", True)))
-    with cc3:
-        comp["include_reportable_fringe_benefits"] = st.checkbox("Include reportable fringe benefits", value=bool(comp.get("include_reportable_fringe_benefits", True)))
-
-    d["income_definition_components"] = comp
-    tp["div293"] = d
-    st.session_state.tax_params = tp
-
-    st.info(
-        "If you want Medicare Levy Surcharge (MLS), HELP/HECS, offsets (e.g., LITO), franking credits, CGT, depreciation, "
-        "or trust/company ownership — tell me and we’ll add only the necessary inputs."
-    )
-
-st.divider()
-
-with st.expander("Readiness checklist (inputs captured for your key metrics)", expanded=True):
-    st.write("✅ **Per individual:** base salary, remote uplift, investment allocations, extra concessional, RFB/RESC (Div293 support)")
-    st.write("✅ **Per individual taxes later:** income tax brackets + Medicare thresholds + Div293 parameters supplied by you")
-    st.write("✅ **Household:** couple toggle + children + gross investment income + ownership splits")
-    st.write("✅ **Negative gearing:** deductible interest + other deductions per investment + ownership splits")
-    st.caption("Next: once you review this Inputs page, we’ll lock assumptions/logic and then implement the Results page + calculations.")
-
-with st.expander("Debug: current input payload (optional)", expanded=False):
-    st.json(_snapshot_current_inputs())
+# Optional debug (kept hidden)
+with st.expander("Debug (optional)", expanded=False):
+    st.json(_snapshot())
