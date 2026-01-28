@@ -1046,6 +1046,28 @@ with tab_household:
 with tab_summary:
     st.markdown("## Scenario summary")
     st.caption("Compare household dashboard metrics across saved scenarios (annual values unless stated).")
+    st.markdown(
+        """
+        <style>
+        /* Scenario summary pastel theme */
+        div[data-testid="stDataFrame"] thead tr th {
+            background: #F4EEFF !important;
+        }
+        div[data-testid="stDataFrame"] tbody tr:nth-child(even) td {
+            background: #F7FBFF !important;
+        }
+        div[data-testid="stDataFrame"] tbody tr:nth-child(odd) td {
+            background: #FFFFFF !important;
+        }
+        div[data-testid="stDataFrame"] tbody tr:hover td {
+            background: #FFF7E6 !important;
+        }
+        </style>
+        """
+        ,
+        unsafe_allow_html=True,
+    )
+
 
     if not st.session_state.scenarios:
         st.info("No saved scenarios yet. Add a scenario from the sidebar to see comparisons here.")
@@ -1370,9 +1392,24 @@ with tab_summary:
                 with h1:
                     st.markdown(
                         f"""
-                        <div style="font-size:0.85rem; opacity:0.75; margin-bottom:6px;">Top scenario (Pay annual)</div>
-                        <div style="font-size:0.95rem; font-weight:700; line-height:1.2; white-space:normal; word-break:break-word;">
+                        <div style="
+                            background:#EAF8F0;
+                            border:1px solid rgba(0,0,0,0.06);
+                            border-radius:14px;
+                            padding:12px 14px;
+                        ">
+                          <div style="font-size:0.80rem; opacity:0.70; margin-bottom:6px;">
+                            Top scenario (Pay annual)
+                          </div>
+                          <div style="
+                            font-size:0.92rem;
+                            font-weight:700;
+                            line-height:1.25;
+                            white-space:normal;
+                            word-break:break-word;
+                          ">
                             {best["Scenario"]}
+                          </div>
                         </div>
                         """,
                         unsafe_allow_html=True,
