@@ -52,6 +52,15 @@ def _ensure_state() -> None:
     if "active_scenario" not in st.session_state:
         st.session_state.active_scenario = None
 
+    if "definitions_note" not in st.session_state:
+        st.session_state.definitions_note = (
+            "Earned income: Base salary + remote uplift\n"
+            "Taxable income (approx): Total salary plus net taxable investment position by owner allocation\n"
+            "Earned income after tax (before expenses): Not shown here (use Tax sections above)\n"
+            "Negative gearing benefit: Tax reduction from allowable investment losses used to reduce taxable income\n"
+            "Investment losses visibility: Shows investment income and net taxable investment position by owner allocation\n"
+        )
+
 
 def _snapshot() -> Dict[str, Any]:
     return {
@@ -389,8 +398,7 @@ with st.sidebar:
                     if st.session_state.active_scenario == name:
                         st.session_state.active_scenario = None
                     del st.session_state.scenarios[name]
-                    st.session_state.scenarios[name] = st.session_state.scenarios[name] if name in st.session_state.scenarios else None
-                    st.session_state.scenarios = {k: v for k, v in st.session_state.scenarios.items() if v is not None}
+                    st.session_state.scenarios = st.session_state.scenarios
                     st.rerun()
 
         st.divider()
@@ -661,7 +669,9 @@ with tab_calc:
             )
         return max(0.0, tax)
 
-    def calc_medicare_levy_amount_from_income(income_for_thresholds: float, levy_base_income: float, lower: float, upper: float) -> float:
+    def calc_medicare_levy_amount_from_income(
+        income_for_thresholds: float, levy_base_income: float, lower: float, upper: float
+    ) -> float:
         """
         Medicare levy:
         - 0 if income_for_thresholds <= lower
@@ -847,7 +857,7 @@ with tab_calc:
         pa_taxable_income, pb_taxable_income
     )
 
-    # Total tax (as requested): income tax + Medicare levy + Div293 (EXCLUDES super contributions tax)
+    # Total tax (as requested previously): income tax + Medicare levy + Div293 (EXCLUDES super contributions tax)
     pa_total_tax = pa_income_tax + pa_medicare + pa_div293
     pb_total_tax = (pb_income_tax + pb_medicare + pb_div293) if is_couple else 0.0
 
@@ -879,9 +889,8 @@ with tab_calc:
         else 0.0
     )
 
-    # Totals for household dashboard (values only; UI moved to Household tab)
+    # Totals (used in Household dashboard)
     household_total_salary = pa_total_salary + (pb_total_salary if is_couple else 0.0)
-    household_taxable_income = pa_taxable_income + (pb_taxable_income if is_couple else 0.0)
     household_super_total = (pa_sg + pa_extra_cc) + ((pb_sg + pb_extra_cc) if is_couple else 0.0)
 
     colA, colB = st.columns(2, gap="large")
@@ -984,42 +993,35 @@ with tab_calc:
 with tab_household:
     st.markdown("## Household dashboard")
 
-    k1, k2, k3, k4, k5 = st.columns(5)
-    with k1:
+    # KPIs (individual taxable income + negative gearing benefit as requested)
+    row1 = st.columns(4)
+    with row1[0]:
         st.metric("Total salary", _fmt_money(household_total_salary))
-    with k2:
+    with row1[1]:
         st.metric("Gross investments", _fmt_money(splits["gross_total"]))
-    with k3:
+    with row1[2]:
         st.metric("Net investments", _fmt_money(splits["net_taxable_total"]))
-    with k4:
-        st.metric("Taxable income (approx)", _fmt_money(household_taxable_income))
-    with k5:
+    with row1[3]:
         st.metric("Total super", _fmt_money(household_super_total))
+
+    row2 = st.columns(4)
+    with row2[0]:
+        st.metric("Taxable income (Person A)", _fmt_money(pa_taxable_income))
+    with row2[1]:
+        st.metric("Taxable income (Person B)", _fmt_money(pb_taxable_income) if is_couple else "—")
+    with row2[2]:
+        st.metric("Negative gearing benefit (A)", _fmt_money(pa_ng_benefit))
+    with row2[3]:
+        st.metric("Negative gearing benefit (B)", _fmt_money(pb_ng_benefit) if is_couple else "—")
 
     st.divider()
 
-    left, right = st.columns([1.1, 0.9], gap="large")
-    with left:
-        _render_metric_card(
-            "Household",
-            [
-                ("Total salary", _fmt_money(household_total_salary)),
-                ("Gross investment income ($/year)", _fmt_money(splits["gross_total"])),
-                ("Net investment income ($/year)", _fmt_money(splits["net_taxable_total"])),
-                ("Total taxable income (approx)", _fmt_money(household_taxable_income)),
-                ("Total super contributions", _fmt_money(household_super_total)),
-            ],
-            BG_HOUSEHOLD,
-        )
-    with right:
-        _render_metric_card(
-            "Definitions used in this app",
-            [
-                ("Earned income", "Base salary + remote uplift"),
-                ("Taxable income (approx)", "Total salary plus net taxable investment position by owner allocation"),
-                ("Earned income after tax (before expenses)", "Not shown here (use Tax sections above)"),
-                ("Negative gearing benefit", "Tax reduction from allowable investment losses used to reduce taxable income"),
-                ("Investment losses visibility", "Shows investment income and net taxable investment position by owner allocation"),
-            ],
-            BG_INVEST,
-        )
+    # Editable note (keep title, convert block to editable)
+    st.markdown("### Definitions")
+    st.text_area(
+        "Definitions",
+        value=st.session_state.definitions_note,
+        key="definitions_note",
+        height=220,
+        label_visibility="collapsed",
+    )
