@@ -1,20 +1,13 @@
-# app.py
-# Inputs page ONLY — clean minimal inputs for FY2025–26 onwards.
-# Tax brackets / Medicare / MLS / Div 293 rules will be implemented in backend later
-# using official ATO material (no user-entered tax settings UI).
-
 import copy
 import uuid
 from typing import Any, Dict, List, Tuple
 
 import streamlit as st
 
-
 # -----------------------------
 # Constants (backend defaults)
 # -----------------------------
 SG_RATE = 0.12  # 12% SG (from 1 July 2025 onward)
-
 
 # -----------------------------
 # State helpers
@@ -85,6 +78,18 @@ def calc_uplift_annual(base_salary_annual: float, uplift_pct: float, weeks_away:
     return float(base_salary_annual) * pct * (w / 52.0)
 
 
+def calc_base_ote_annual(base_salary_annual: float, salary_includes_sg: bool) -> float:
+    """
+    Returns an estimated OTE base salary (exclusive of SG) from the base input.
+    If the base salary value is a "package" (includes SG), we back out OTE:
+      OTE ≈ package / (1 + SG_RATE)
+    """
+    base = float(base_salary_annual)
+    if salary_includes_sg and (1.0 + SG_RATE) > 0:
+        return base / (1.0 + SG_RATE)
+    return base
+
+
 def calc_sg_annual(
     base_salary_annual: float,
     salary_includes_sg: bool,
@@ -96,13 +101,7 @@ def calc_sg_annual(
     - OTE assumed = base salary (and optionally uplift).
     - If salary includes SG (package), we back out OTE: OTE ≈ package / (1 + SG_RATE).
     """
-    base = float(base_salary_annual)
-
-    if salary_includes_sg and (1.0 + SG_RATE) > 0:
-        base_ote = base / (1.0 + SG_RATE)
-    else:
-        base_ote = base
-
+    base_ote = calc_base_ote_annual(base_salary_annual, salary_includes_sg)
     ote = base_ote + (float(uplift_annual) if uplift_sg_applies else 0.0)
     return max(0.0, ote) * SG_RATE
 
@@ -625,18 +624,32 @@ with tab_calc:
     pa = st.session_state.person_a
     pb = st.session_state.person_b
 
+    # Earned income (taxable approximation): OTE base (ex SG) + uplift
+    pa_base_ote = calc_base_ote_annual(
+        _safe_float(pa.get("base_salary_annual", 0.0)),
+        bool(pa.get("salary_includes_sg", False)),
+    )
+    pb_base_ote = (
+        calc_base_ote_annual(
+            _safe_float(pb.get("base_salary_annual", 0.0)),
+            bool(pb.get("salary_includes_sg", False)),
+        )
+        if is_couple
+        else 0.0
+    )
+
     pa_uplift = calc_uplift_annual(pa["base_salary_annual"], pa["uplift_pct"], pa["weeks_away"])
     pb_uplift = calc_uplift_annual(pb["base_salary_annual"], pb["uplift_pct"], pb["weeks_away"]) if is_couple else 0.0
 
-    pa_total_salary = _safe_float(pa["base_salary_annual"]) + pa_uplift
-    pb_total_salary = (_safe_float(pb["base_salary_annual"]) + pb_uplift) if is_couple else 0.0
+    pa_earned_income = pa_base_ote + pa_uplift
+    pb_earned_income = (pb_base_ote + pb_uplift) if is_couple else 0.0
 
     splits = _household_investment_splits(st.session_state.investments, is_couple=is_couple)
 
     # Build "taxable income" from currently available inputs only:
-    # taxable_income ~= total_salary + net_taxable_investment_allocated
-    pa_taxable_income = pa_total_salary + splits["a_net_taxable"]
-    pb_taxable_income = pb_total_salary + splits["b_net_taxable"]
+    # taxable_income ~= earned_income (OTE + uplift) + net_taxable_investment_allocated
+    pa_taxable_income = pa_earned_income + splits["a_net_taxable"]
+    pb_taxable_income = pb_earned_income + splits["b_net_taxable"]
 
     # Placeholder tax/super tax values (to be computed once tax engine is added)
     ZERO = 0.0
@@ -648,15 +661,22 @@ with tab_calc:
             st.markdown("### Person A")
 
             with st.expander(f"Taxable income  \u00a0\u00a0 **{_fmt_money(pa_taxable_income)}**", expanded=True):
-                _render_section_rows(
+                rows = []
+                if bool(pa.get("salary_includes_sg", False)):
+                    rows.append(("Salary package (incl SG)", _fmt_money(_safe_float(pa.get("base_salary_annual", 0.0)))))
+                    rows.append(("Base salary (OTE)", _fmt_money(pa_base_ote)))
+                else:
+                    rows.append(("Base salary (OTE)", _fmt_money(pa_base_ote)))
+
+                rows.extend(
                     [
-                        ("Base salary", _fmt_money(_safe_float(pa["base_salary_annual"]))),
                         ("Uplift", _fmt_money(pa_uplift)),
-                        ("Total salary", _fmt_money(pa_total_salary)),
+                        ("Earned income (OTE + uplift)", _fmt_money(pa_earned_income)),
                         ("Investment income", _fmt_money(splits["a_gross"])),
                         ("Net investment income", _fmt_money(splits["a_net_taxable"])),
                     ]
                 )
+                _render_section_rows(rows)
 
             pa_sg = calc_sg_annual(
                 pa["base_salary_annual"],
@@ -664,12 +684,14 @@ with tab_calc:
                 pa_uplift,
                 bool(pa["uplift_sg_applies"]),
             )
-            with st.expander(f"Superannuation  \u00a0\u00a0 **{_fmt_money(pa_sg + _safe_float(pa['extra_concessional_annual']))}**", expanded=False):
+            pa_super_total = pa_sg + _safe_float(pa.get("extra_concessional_annual", 0.0))
+
+            with st.expander(f"Superannuation  \u00a0\u00a0 **{_fmt_money(pa_super_total)}**", expanded=False):
                 _render_section_rows(
                     [
                         ("Super Guarantee", _fmt_money(pa_sg)),
                         ("Tax (taken from super)", _fmt_money(ZERO)),
-                        ("Concessional", _fmt_money(_safe_float(pa["extra_concessional_annual"]))),
+                        ("Concessional", _fmt_money(_safe_float(pa.get("extra_concessional_annual", 0.0)))),
                         ("Non-concessional", _fmt_money(ZERO)),
                     ]
                 )
@@ -689,15 +711,22 @@ with tab_calc:
                 st.markdown("### Person B")
 
                 with st.expander(f"Taxable income  \u00a0\u00a0 **{_fmt_money(pb_taxable_income)}**", expanded=True):
-                    _render_section_rows(
+                    rows = []
+                    if bool(pb.get("salary_includes_sg", False)):
+                        rows.append(("Salary package (incl SG)", _fmt_money(_safe_float(pb.get("base_salary_annual", 0.0)))))
+                        rows.append(("Base salary (OTE)", _fmt_money(pb_base_ote)))
+                    else:
+                        rows.append(("Base salary (OTE)", _fmt_money(pb_base_ote)))
+
+                    rows.extend(
                         [
-                            ("Base salary", _fmt_money(_safe_float(pb["base_salary_annual"]))),
                             ("Uplift", _fmt_money(pb_uplift)),
-                            ("Total salary", _fmt_money(pb_total_salary)),
+                            ("Earned income (OTE + uplift)", _fmt_money(pb_earned_income)),
                             ("Investment income", _fmt_money(splits["b_gross"])),
                             ("Net investment income", _fmt_money(splits["b_net_taxable"])),
                         ]
                     )
+                    _render_section_rows(rows)
 
                 pb_sg = calc_sg_annual(
                     pb["base_salary_annual"],
@@ -705,12 +734,14 @@ with tab_calc:
                     pb_uplift,
                     bool(pb["uplift_sg_applies"]),
                 )
-                with st.expander(f"Superannuation  \u00a0\u00a0 **{_fmt_money(pb_sg + _safe_float(pb['extra_concessional_annual']))}**", expanded=False):
+                pb_super_total = pb_sg + _safe_float(pb.get("extra_concessional_annual", 0.0))
+
+                with st.expander(f"Superannuation  \u00a0\u00a0 **{_fmt_money(pb_super_total)}**", expanded=False):
                     _render_section_rows(
                         [
                             ("Super Guarantee", _fmt_money(pb_sg)),
                             ("Tax (taken from super)", _fmt_money(ZERO)),
-                            ("Concessional", _fmt_money(_safe_float(pb["extra_concessional_annual"]))),
+                            ("Concessional", _fmt_money(_safe_float(pb.get("extra_concessional_annual", 0.0)))),
                             ("Non-concessional", _fmt_money(ZERO)),
                         ]
                     )
@@ -728,16 +759,20 @@ with tab_calc:
                 st.markdown("### Person B")
                 st.write("Not enabled (single mode).")
 
-    # Household (remove tax year/type/dependents)
+    # Household key metrics (inputs-only, consistent with taxable income definitions above)
+    household_earned_income = pa_earned_income + (pb_earned_income if is_couple else 0.0)
+    household_taxable_income = pa_taxable_income + (pb_taxable_income if is_couple else 0.0)
+    household_super_total = pa_super_total + (pb_super_total if is_couple else 0.0)
+
     with st.container():
         _render_metric_card(
             "Household",
             [
-                ("After-tax earned income (before expenses)", _fmt_money(ZERO)),
+                ("Earned income (OTE + uplift)", _fmt_money(household_earned_income)),
                 ("Gross investment income ($/year)", _fmt_money(splits["gross_total"])),
-                ("Total after-tax earnings", _fmt_money(ZERO)),
-                ("Total super contributions", _fmt_money(ZERO)),
-                ("Negative gearing benefit", _fmt_money(ZERO)),
+                ("Net investment income ($/year)", _fmt_money(splits["net_taxable_total"])),
+                ("Total taxable income (approx)", _fmt_money(household_taxable_income)),
+                ("Total super contributions", _fmt_money(household_super_total)),
             ],
             BG_HOUSEHOLD,
         )
@@ -746,9 +781,10 @@ with tab_calc:
     _render_metric_card(
         "Definitions used in this app",
         [
-            ("Earned income", "Base salary + remote uplift"),
-            ("Earned income after tax (before expenses)", "Earned income minus personal taxes (income tax + Medicare + Div293 + MLS)"),
-            ("Negative gearing benefit", "Tax reduction from allowable investment losses used to reduce taxable income"),
+            ("Earned income", "OTE base salary (ex SG) + remote uplift"),
+            ("Taxable income (approx)", "Earned income plus net taxable investment position by owner allocation"),
+            ("Earned income after tax (before expenses)", "Not calculated yet (tax engine pending)"),
+            ("Negative gearing benefit", "Not calculated yet (tax engine pending)"),
             ("Investment losses visibility", "Shows investment income and net taxable investment position by owner allocation"),
         ],
         BG_INVEST,
