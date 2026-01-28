@@ -409,9 +409,7 @@ with st.sidebar:
                 st.success("Saved")
 
 # Top tabs (Inputs first)
-tab_inputs, tab_calc, tab_household, tab_summary = st.tabs(
-    ["Inputs", "Income calculator", "Household dashboard", "Scenario summary"]
-)
+tab_inputs, tab_calc, tab_household, tab_summary = st.tabs(["Inputs", "Income calculator", "Household dashboard", "Scenario summary"])
 
 with tab_inputs:
     st.title("Inputs")
@@ -1047,358 +1045,374 @@ with tab_household:
 
 with tab_summary:
     st.markdown("## Scenario summary")
-    st.caption("Compare household dashboard metrics across scenarios (annual values unless stated).")
+    st.caption("Compare household dashboard metrics across saved scenarios (annual values unless stated).")
 
-    def _compute_dashboard_metrics_from_payload(payload: Dict[str, Any]) -> Dict[str, float]:
-        hh_local = payload.get("household", {}) or {}
-        pa_local = payload.get("person_a", {}) or {}
-        pb_local = payload.get("person_b", {}) or {}
-        investments_local = payload.get("investments", []) or []
-
-        is_couple_local = bool(hh_local.get("is_couple", True))
-        dependant_children_local = int(hh_local.get("dependant_children", 0))
-
-        # ---- Tax engine (mirrors Income calculator tab; backend only) ----
-        def calc_income_tax_resident_annual_local(taxable_income: float) -> float:
-            x = max(0.0, float(taxable_income))
-            tax = 0.0
-            if x <= 18200:
-                tax = 0.0
-            elif x <= 45000:
-                tax = (x - 18200) * 0.16
-            elif x <= 135000:
-                tax = (45000 - 18200) * 0.16 + (x - 45000) * 0.30
-            elif x <= 190000:
-                tax = (45000 - 18200) * 0.16 + (135000 - 45000) * 0.30 + (x - 135000) * 0.37
-            else:
-                tax = (
-                    (45000 - 18200) * 0.16
-                    + (135000 - 45000) * 0.30
-                    + (190000 - 135000) * 0.37
-                    + (x - 190000) * 0.45
-                )
-            return max(0.0, tax)
-
-        def calc_medicare_levy_amount_from_income_local(
-            income_for_thresholds: float, levy_base_income: float, lower: float, upper: float
-        ) -> float:
-            inc = max(0.0, float(income_for_thresholds))
-            base = max(0.0, float(levy_base_income))
-
-            if inc <= lower:
-                return 0.0
-
-            if inc < upper:
-                return max(0.0, 0.1 * (inc - lower))
-
-            return 0.02 * base
-
-        def calc_medicare_levy_split_local(
-            is_couple_inner: bool,
-            children: int,
-            pa_taxable: float,
-            pb_taxable: float,
-            pa_rfb: float,
-            pb_rfb: float,
-            year_label: str,
-        ) -> Tuple[float, float]:
-            IND_LOWER = 27222.0
-            IND_UPPER = 34027.0
-            FAM_LOWER = 45907.0
-            FAM_UPPER = 57383.0
-            CHILD_INC_LOWER = 4216.0
-            CHILD_INC_UPPER = 5270.0
-
-            a_tax = max(0.0, float(pa_taxable))
-            b_tax = max(0.0, float(pb_taxable))
-            a_r = max(0.0, float(pa_rfb))
-            b_r = max(0.0, float(pb_rfb))
-
-            if not is_couple_inner:
-                income_for_thresholds_a = a_tax + a_r
-                a_levy = calc_medicare_levy_amount_from_income_local(income_for_thresholds_a, a_tax, IND_LOWER, IND_UPPER)
-                return a_levy, 0.0
-
-            fam_lower = FAM_LOWER + CHILD_INC_LOWER * max(0, int(children))
-            fam_upper = FAM_UPPER + CHILD_INC_UPPER * max(0, int(children))
-
-            fam_income_for_thresholds = (a_tax + a_r) + (b_tax + b_r)
-            fam_taxable_base = a_tax + b_tax
-
-            total_levy = calc_medicare_levy_amount_from_income_local(
-                fam_income_for_thresholds,
-                fam_taxable_base,
-                fam_lower,
-                fam_upper,
-            )
-
-            if fam_taxable_base <= 0:
-                return 0.0, 0.0
-
-            a_share = a_tax / fam_taxable_base
-            b_share = b_tax / fam_taxable_base
-            return total_levy * a_share, total_levy * b_share
-
-        def calc_div293_tax_local(taxable_income: float, reportable_fringe_benefits: float, concessional_contributions: float) -> float:
-            threshold = 250000.0
-            ti = max(0.0, float(taxable_income))
-            rfb = max(0.0, float(reportable_fringe_benefits))
-            cc = max(0.0, float(concessional_contributions))
-            div293_income = ti + rfb + cc
-            excess = max(0.0, div293_income - threshold)
-            return 0.15 * min(cc, excess)
-
-        # ---- Earnings + investment splits ----
-        pa_base_ote_local = calc_base_ote_annual(
-            _safe_float(pa_local.get("base_salary_annual", 0.0)),
-            bool(pa_local.get("salary_includes_sg", False)),
-        )
-        pb_base_ote_local = (
-            calc_base_ote_annual(
-                _safe_float(pb_local.get("base_salary_annual", 0.0)),
-                bool(pb_local.get("salary_includes_sg", False)),
-            )
-            if is_couple_local
-            else 0.0
-        )
-
-        pa_uplift_local = calc_uplift_annual(
-            _safe_float(pa_local.get("base_salary_annual", 0.0)),
-            _safe_float(pa_local.get("uplift_pct", 0.0)),
-            int(pa_local.get("weeks_away", 0)),
-        )
-        pb_uplift_local = (
-            calc_uplift_annual(
-                _safe_float(pb_local.get("base_salary_annual", 0.0)),
-                _safe_float(pb_local.get("uplift_pct", 0.0)),
-                int(pb_local.get("weeks_away", 0)),
-            )
-            if is_couple_local
-            else 0.0
-        )
-
-        pa_total_salary_local = pa_base_ote_local + pa_uplift_local
-        pb_total_salary_local = (pb_base_ote_local + pb_uplift_local) if is_couple_local else 0.0
-
-        splits_local = _household_investment_splits(investments_local, is_couple=is_couple_local)
-
-        pa_taxable_income_local = pa_total_salary_local + splits_local["a_net_taxable"]
-        pb_taxable_income_local = pb_total_salary_local + splits_local["b_net_taxable"]
-
-        # ---- Super contributions ----
-        pa_sg_local = calc_sg_annual(
-            _safe_float(pa_local.get("base_salary_annual", 0.0)),
-            bool(pa_local.get("salary_includes_sg", False)),
-            pa_uplift_local,
-            bool(pa_local.get("uplift_sg_applies", False)),
-        )
-        pb_sg_local = (
-            calc_sg_annual(
-                _safe_float(pb_local.get("base_salary_annual", 0.0)),
-                bool(pb_local.get("salary_includes_sg", False)),
-                pb_uplift_local,
-                bool(pb_local.get("uplift_sg_applies", False)),
-            )
-            if is_couple_local
-            else 0.0
-        )
-
-        pa_extra_cc_local = _safe_float(pa_local.get("extra_concessional_annual", 0.0))
-        pb_extra_cc_local = _safe_float(pb_local.get("extra_concessional_annual", 0.0)) if is_couple_local else 0.0
-
-        pa_concessional_total_local = max(0.0, pa_sg_local + pa_extra_cc_local)
-        pb_concessional_total_local = max(0.0, pb_sg_local + pb_extra_cc_local) if is_couple_local else 0.0
-
-        pa_rfb_local = _safe_float(pa_local.get("reportable_fringe_benefits_annual", 0.0))
-        pb_rfb_local = _safe_float(pb_local.get("reportable_fringe_benefits_annual", 0.0)) if is_couple_local else 0.0
-
-        def _compute_tax_components_local(pa_taxable: float, pb_taxable: float) -> Tuple[float, float, float, float, float, float]:
-            pa_income_tax_inner = calc_income_tax_resident_annual_local(pa_taxable)
-            pb_income_tax_inner = calc_income_tax_resident_annual_local(pb_taxable) if is_couple_local else 0.0
-
-            pa_medicare_inner, pb_medicare_inner = calc_medicare_levy_split_local(
-                is_couple_inner=is_couple_local,
-                children=dependant_children_local,
-                pa_taxable=pa_taxable,
-                pb_taxable=pb_taxable,
-                pa_rfb=pa_rfb_local,
-                pb_rfb=pb_rfb_local,
-                year_label=str(hh_local.get("tax_year_label", "2025–26")),
-            )
-
-            pa_div293_inner = calc_div293_tax_local(pa_taxable, pa_rfb_local, pa_concessional_total_local)
-            pb_div293_inner = calc_div293_tax_local(pb_taxable, pb_rfb_local, pb_concessional_total_local) if is_couple_local else 0.0
-
-            return (
-                pa_income_tax_inner,
-                pb_income_tax_inner,
-                pa_medicare_inner,
-                pb_medicare_inner,
-                pa_div293_inner,
-                pb_div293_inner,
-            )
-
-        (
-            pa_income_tax_local,
-            pb_income_tax_local,
-            pa_medicare_local,
-            pb_medicare_local,
-            pa_div293_local,
-            pb_div293_local,
-        ) = _compute_tax_components_local(pa_taxable_income_local, pb_taxable_income_local)
-
-        pa_total_tax_local = pa_income_tax_local + pa_medicare_local + pa_div293_local
-        pb_total_tax_local = (pb_income_tax_local + pb_medicare_local + pb_div293_local) if is_couple_local else 0.0
-
-        # ---- Negative gearing benefit ----
-        pa_taxable_no_losses_local = pa_total_salary_local + max(0.0, splits_local["a_net_taxable"])
-        pb_taxable_no_losses_local = pb_total_salary_local + max(0.0, splits_local["b_net_taxable"])
-
-        (
-            pa_income_tax_nl,
-            pb_income_tax_nl,
-            pa_medicare_nl,
-            pb_medicare_nl,
-            pa_div293_nl,
-            pb_div293_nl,
-        ) = _compute_tax_components_local(pa_taxable_no_losses_local, pb_taxable_no_losses_local)
-
-        pa_ng_benefit_local = max(
-            0.0,
-            (pa_income_tax_nl + pa_medicare_nl + pa_div293_nl) - (pa_total_tax_local),
-        )
-        pb_ng_benefit_local = (
-            max(
-                0.0,
-                (pb_income_tax_nl + pb_medicare_nl + pb_div293_nl) - (pb_total_tax_local),
-            )
-            if is_couple_local
-            else 0.0
-        )
-
-        household_total_salary_local = pa_total_salary_local + (pb_total_salary_local if is_couple_local else 0.0)
-        household_super_total_local = (pa_sg_local + pa_extra_cc_local) + (
-            (pb_sg_local + pb_extra_cc_local) if is_couple_local else 0.0
-        )
-
-        pa_after_tax_income_local = max(0.0, pa_total_salary_local - pa_total_tax_local)
-        pb_after_tax_income_local = max(0.0, pb_total_salary_local - pb_total_tax_local) if is_couple_local else 0.0
-
-        household_after_tax_income_local = pa_after_tax_income_local + (pb_after_tax_income_local if is_couple_local else 0.0)
-        household_pay_local = household_after_tax_income_local + splits_local["gross_total"]
-        household_ng_benefit_local = pa_ng_benefit_local + (pb_ng_benefit_local if is_couple_local else 0.0)
-
-        return {
-            "Total salaries": float(household_total_salary_local),
-            "After-tax income": float(household_after_tax_income_local),
-            "Total super": float(household_super_total_local),
-            "Gross investments": float(splits_local["gross_total"]),
-            "Net investments": float(splits_local["net_taxable_total"]),
-            "Negative gearing benefit": float(household_ng_benefit_local),
-            "Pay (annual)": float(household_pay_local),
-            "Pay (monthly)": float(household_pay_local / 12.0),
-        }
-
-    metric_cols = [
-        "Total salaries",
-        "After-tax income",
-        "Total super",
-        "Gross investments",
-        "Net investments",
-        "Negative gearing benefit",
-        "Pay (annual)",
-        "Pay (monthly)",
-    ]
-
-    records: List[Dict[str, Any]] = []
-
-    # Include current unsaved state
-    current_payload = _snapshot()
-    current_metrics = _compute_dashboard_metrics_from_payload(current_payload)
-    records.append(
-        {
-            "Scenario": "Current (unsaved)",
-            "Active": False,
-            "Tax year": str(current_payload.get("household", {}).get("tax_year_label", "")),
-            "Couple": bool(current_payload.get("household", {}).get("is_couple", True)),
-            "Children": int(current_payload.get("household", {}).get("dependant_children", 0)),
-            **current_metrics,
-        }
-    )
-
-    # Saved scenarios
-    for name in sorted(st.session_state.scenarios.keys()):
-        payload = st.session_state.scenarios[name]
-        metrics = _compute_dashboard_metrics_from_payload(payload)
-        records.append(
-            {
-                "Scenario": name,
-                "Active": (name == st.session_state.active_scenario),
-                "Tax year": str(payload.get("household", {}).get("tax_year_label", "")),
-                "Couple": bool(payload.get("household", {}).get("is_couple", True)),
-                "Children": int(payload.get("household", {}).get("dependant_children", 0)),
-                **metrics,
-            }
-        )
-
-    df = pd.DataFrame(records)
-
-    if df.empty:
-        st.info("No scenarios available.")
+    if not st.session_state.scenarios:
+        st.info("No saved scenarios yet. Add a scenario from the sidebar to see comparisons here.")
     else:
-        scenario_names = df["Scenario"].tolist()
-        default_baseline = (
-            st.session_state.active_scenario
-            if st.session_state.active_scenario in scenario_names
-            else "Current (unsaved)"
-        )
-        baseline_name = st.selectbox(
-            "Baseline for deltas",
-            options=scenario_names,
-            index=scenario_names.index(default_baseline),
-        )
 
-        baseline_row = df.loc[df["Scenario"] == baseline_name].iloc[0]
-        for col in metric_cols:
-            df[f"Δ {col}"] = df[col] - float(baseline_row[col])
+        def _compute_dashboard_metrics_from_payload(payload: Dict[str, Any]) -> Dict[str, float]:
+            hh_local = payload.get("household", {}) or {}
+            pa_local = payload.get("person_a", {}) or {}
+            pb_local = payload.get("person_b", {}) or {}
+            investments_local = payload.get("investments", []) or []
 
-        df_sorted = df.sort_values(by="Pay (annual)", ascending=False).reset_index(drop=True)
+            is_couple_local = bool(hh_local.get("is_couple", True))
+            dependant_children_local = int(hh_local.get("dependant_children", 0))
 
-        # Quick highlights
-        best = df_sorted.iloc[0]
-        k1, k2, k3 = st.columns(3, gap="large")
-        with k1:
-            st.metric("Top scenario (Pay annual)", str(best["Scenario"]))
-        with k2:
-            st.metric("Pay (annual)", _fmt_money(float(best["Pay (annual)"])))
-        with k3:
-            st.metric("Pay (monthly)", _fmt_money(float(best["Pay (monthly)"])))
+            # ---- Tax engine (mirrors Income calculator tab; backend only) ----
+            def calc_income_tax_resident_annual_local(taxable_income: float) -> float:
+                x = max(0.0, float(taxable_income))
+                tax = 0.0
+                if x <= 18200:
+                    tax = 0.0
+                elif x <= 45000:
+                    tax = (x - 18200) * 0.16
+                elif x <= 135000:
+                    tax = (45000 - 18200) * 0.16 + (x - 45000) * 0.30
+                elif x <= 190000:
+                    tax = (45000 - 18200) * 0.16 + (135000 - 45000) * 0.30 + (x - 135000) * 0.37
+                else:
+                    tax = (
+                        (45000 - 18200) * 0.16
+                        + (135000 - 45000) * 0.30
+                        + (190000 - 135000) * 0.37
+                        + (x - 190000) * 0.45
+                    )
+                return max(0.0, tax)
 
-        st.divider()
+            def calc_medicare_levy_amount_from_income_local(
+                income_for_thresholds: float, levy_base_income: float, lower: float, upper: float
+            ) -> float:
+                inc = max(0.0, float(income_for_thresholds))
+                base = max(0.0, float(levy_base_income))
 
-        column_config = {
-            "Scenario": st.column_config.TextColumn(width="medium"),
-            "Active": st.column_config.CheckboxColumn(width="small"),
-            "Tax year": st.column_config.TextColumn(width="small"),
-            "Couple": st.column_config.CheckboxColumn(width="small"),
-            "Children": st.column_config.NumberColumn(width="small"),
-        }
+                if inc <= lower:
+                    return 0.0
 
-        for col in metric_cols:
-            column_config[col] = st.column_config.NumberColumn(format="$%,.0f")
+                if inc < upper:
+                    return max(0.0, 0.1 * (inc - lower))
 
-        for col in [f"Δ {c}" for c in metric_cols]:
-            column_config[col] = st.column_config.NumberColumn(format="$%,.0f")
+                return 0.02 * base
 
-        st.dataframe(
-            df_sorted,
-            use_container_width=True,
-            hide_index=True,
-            column_config=column_config,
-        )
+            def calc_medicare_levy_split_local(
+                is_couple_inner: bool,
+                children: int,
+                pa_taxable: float,
+                pb_taxable: float,
+                pa_rfb: float,
+                pb_rfb: float,
+                year_label: str,
+            ) -> Tuple[float, float]:
+                IND_LOWER = 27222.0
+                IND_UPPER = 34027.0
+                FAM_LOWER = 45907.0
+                FAM_UPPER = 57383.0
+                CHILD_INC_LOWER = 4216.0
+                CHILD_INC_UPPER = 5270.0
 
-        with st.expander("Notes / definitions", expanded=False):
-            st.write(
-                "This table compares the same metrics shown in the **Household dashboard** across scenarios. "
-                "Deltas (Δ) are relative to the selected baseline scenario."
+                a_tax = max(0.0, float(pa_taxable))
+                b_tax = max(0.0, float(pb_taxable))
+                a_r = max(0.0, float(pa_rfb))
+                b_r = max(0.0, float(pb_rfb))
+
+                if not is_couple_inner:
+                    income_for_thresholds_a = a_tax + a_r
+                    a_levy = calc_medicare_levy_amount_from_income_local(
+                        income_for_thresholds_a, a_tax, IND_LOWER, IND_UPPER
+                    )
+                    return a_levy, 0.0
+
+                fam_lower = FAM_LOWER + CHILD_INC_LOWER * max(0, int(children))
+                fam_upper = FAM_UPPER + CHILD_INC_UPPER * max(0, int(children))
+
+                fam_income_for_thresholds = (a_tax + a_r) + (b_tax + b_r)
+                fam_taxable_base = a_tax + b_tax
+
+                total_levy = calc_medicare_levy_amount_from_income_local(
+                    fam_income_for_thresholds,
+                    fam_taxable_base,
+                    fam_lower,
+                    fam_upper,
+                )
+
+                if fam_taxable_base <= 0:
+                    return 0.0, 0.0
+
+                a_share = a_tax / fam_taxable_base
+                b_share = b_tax / fam_taxable_base
+                return total_levy * a_share, total_levy * b_share
+
+            def calc_div293_tax_local(taxable_income: float, reportable_fringe_benefits: float, concessional_contributions: float) -> float:
+                threshold = 250000.0
+                ti = max(0.0, float(taxable_income))
+                rfb = max(0.0, float(reportable_fringe_benefits))
+                cc = max(0.0, float(concessional_contributions))
+                div293_income = ti + rfb + cc
+                excess = max(0.0, div293_income - threshold)
+                return 0.15 * min(cc, excess)
+
+            # ---- Earnings + investment splits ----
+            pa_base_ote_local = calc_base_ote_annual(
+                _safe_float(pa_local.get("base_salary_annual", 0.0)),
+                bool(pa_local.get("salary_includes_sg", False)),
             )
+            pb_base_ote_local = (
+                calc_base_ote_annual(
+                    _safe_float(pb_local.get("base_salary_annual", 0.0)),
+                    bool(pb_local.get("salary_includes_sg", False)),
+                )
+                if is_couple_local
+                else 0.0
+            )
+
+            pa_uplift_local = calc_uplift_annual(
+                _safe_float(pa_local.get("base_salary_annual", 0.0)),
+                _safe_float(pa_local.get("uplift_pct", 0.0)),
+                int(pa_local.get("weeks_away", 0)),
+            )
+            pb_uplift_local = (
+                calc_uplift_annual(
+                    _safe_float(pb_local.get("base_salary_annual", 0.0)),
+                    _safe_float(pb_local.get("uplift_pct", 0.0)),
+                    int(pb_local.get("weeks_away", 0)),
+                )
+                if is_couple_local
+                else 0.0
+            )
+
+            pa_total_salary_local = pa_base_ote_local + pa_uplift_local
+            pb_total_salary_local = (pb_base_ote_local + pb_uplift_local) if is_couple_local else 0.0
+
+            splits_local = _household_investment_splits(investments_local, is_couple=is_couple_local)
+
+            pa_taxable_income_local = pa_total_salary_local + splits_local["a_net_taxable"]
+            pb_taxable_income_local = pb_total_salary_local + splits_local["b_net_taxable"]
+
+            # ---- Super contributions ----
+            pa_sg_local = calc_sg_annual(
+                _safe_float(pa_local.get("base_salary_annual", 0.0)),
+                bool(pa_local.get("salary_includes_sg", False)),
+                pa_uplift_local,
+                bool(pa_local.get("uplift_sg_applies", False)),
+            )
+            pb_sg_local = (
+                calc_sg_annual(
+                    _safe_float(pb_local.get("base_salary_annual", 0.0)),
+                    bool(pb_local.get("salary_includes_sg", False)),
+                    pb_uplift_local,
+                    bool(pb_local.get("uplift_sg_applies", False)),
+                )
+                if is_couple_local
+                else 0.0
+            )
+
+            pa_extra_cc_local = _safe_float(pa_local.get("extra_concessional_annual", 0.0))
+            pb_extra_cc_local = _safe_float(pb_local.get("extra_concessional_annual", 0.0)) if is_couple_local else 0.0
+
+            pa_concessional_total_local = max(0.0, pa_sg_local + pa_extra_cc_local)
+            pb_concessional_total_local = max(0.0, pb_sg_local + pb_extra_cc_local) if is_couple_local else 0.0
+
+            pa_rfb_local = _safe_float(pa_local.get("reportable_fringe_benefits_annual", 0.0))
+            pb_rfb_local = _safe_float(pb_local.get("reportable_fringe_benefits_annual", 0.0)) if is_couple_local else 0.0
+
+            def _compute_tax_components_local(pa_taxable: float, pb_taxable: float) -> Tuple[float, float, float, float, float, float]:
+                pa_income_tax_inner = calc_income_tax_resident_annual_local(pa_taxable)
+                pb_income_tax_inner = calc_income_tax_resident_annual_local(pb_taxable) if is_couple_local else 0.0
+
+                pa_medicare_inner, pb_medicare_inner = calc_medicare_levy_split_local(
+                    is_couple_inner=is_couple_local,
+                    children=dependant_children_local,
+                    pa_taxable=pa_taxable,
+                    pb_taxable=pb_taxable,
+                    pa_rfb=pa_rfb_local,
+                    pb_rfb=pb_rfb_local,
+                    year_label=str(hh_local.get("tax_year_label", "2025–26")),
+                )
+
+                pa_div293_inner = calc_div293_tax_local(pa_taxable, pa_rfb_local, pa_concessional_total_local)
+                pb_div293_inner = calc_div293_tax_local(pb_taxable, pb_rfb_local, pb_concessional_total_local) if is_couple_local else 0.0
+
+                return (
+                    pa_income_tax_inner,
+                    pb_income_tax_inner,
+                    pa_medicare_inner,
+                    pb_medicare_inner,
+                    pa_div293_inner,
+                    pb_div293_inner,
+                )
+
+            (
+                pa_income_tax_local,
+                pb_income_tax_local,
+                pa_medicare_local,
+                pb_medicare_local,
+                pa_div293_local,
+                pb_div293_local,
+            ) = _compute_tax_components_local(pa_taxable_income_local, pb_taxable_income_local)
+
+            pa_total_tax_local = pa_income_tax_local + pa_medicare_local + pa_div293_local
+            pb_total_tax_local = (pb_income_tax_local + pb_medicare_local + pb_div293_local) if is_couple_local else 0.0
+
+            # ---- Negative gearing benefit ----
+            pa_taxable_no_losses_local = pa_total_salary_local + max(0.0, splits_local["a_net_taxable"])
+            pb_taxable_no_losses_local = pb_total_salary_local + max(0.0, splits_local["b_net_taxable"])
+
+            (
+                pa_income_tax_nl,
+                pb_income_tax_nl,
+                pa_medicare_nl,
+                pb_medicare_nl,
+                pa_div293_nl,
+                pb_div293_nl,
+            ) = _compute_tax_components_local(pa_taxable_no_losses_local, pb_taxable_no_losses_local)
+
+            pa_ng_benefit_local = max(
+                0.0,
+                (pa_income_tax_nl + pa_medicare_nl + pa_div293_nl) - (pa_total_tax_local),
+            )
+            pb_ng_benefit_local = (
+                max(
+                    0.0,
+                    (pb_income_tax_nl + pb_medicare_nl + pb_div293_nl) - (pb_total_tax_local),
+                )
+                if is_couple_local
+                else 0.0
+            )
+
+            household_total_salary_local = pa_total_salary_local + (pb_total_salary_local if is_couple_local else 0.0)
+            household_super_total_local = (pa_sg_local + pa_extra_cc_local) + (
+                (pb_sg_local + pb_extra_cc_local) if is_couple_local else 0.0
+            )
+
+            pa_after_tax_income_local = max(0.0, pa_total_salary_local - pa_total_tax_local)
+            pb_after_tax_income_local = max(0.0, pb_total_salary_local - pb_total_tax_local) if is_couple_local else 0.0
+
+            household_after_tax_income_local = pa_after_tax_income_local + (
+                pb_after_tax_income_local if is_couple_local else 0.0
+            )
+            household_pay_local = household_after_tax_income_local + splits_local["gross_total"]
+            household_ng_benefit_local = pa_ng_benefit_local + (pb_ng_benefit_local if is_couple_local else 0.0)
+
+            return {
+                "Total salaries": float(household_total_salary_local),
+                "After-tax income": float(household_after_tax_income_local),
+                "Total super": float(household_super_total_local),
+                "Gross investments": float(splits_local["gross_total"]),
+                "Net investments": float(splits_local["net_taxable_total"]),
+                "Negative gearing benefit": float(household_ng_benefit_local),
+                "Pay (annual)": float(household_pay_local),
+                "Pay (monthly)": float(household_pay_local / 12.0),
+            }
+
+        def _fmt_money_signed(x: float) -> str:
+            v = float(x)
+            if v < 0:
+                return f"-${abs(v):,.0f}"
+            return f"${v:,.0f}"
+
+        metric_cols = [
+            "Total salaries",
+            "After-tax income",
+            "Total super",
+            "Gross investments",
+            "Net investments",
+            "Negative gearing benefit",
+            "Pay (annual)",
+            "Pay (monthly)",
+        ]
+
+        records: List[Dict[str, Any]] = []
+
+        # Saved scenarios only (per requirements)
+        for name in sorted(st.session_state.scenarios.keys()):
+            payload = st.session_state.scenarios[name]
+            metrics = _compute_dashboard_metrics_from_payload(payload)
+            records.append(
+                {
+                    "Scenario": name,
+                    "Active": (name == st.session_state.active_scenario),
+                    "Tax year": str(payload.get("household", {}).get("tax_year_label", "")),
+                    "Couple": bool(payload.get("household", {}).get("is_couple", True)),
+                    "Children": int(payload.get("household", {}).get("dependant_children", 0)),
+                    **metrics,
+                }
+            )
+
+        df = pd.DataFrame(records)
+
+        if df.empty:
+            st.info("No saved scenarios available.")
+        else:
+            scenario_names = df["Scenario"].tolist()
+            default_baseline = (
+                st.session_state.active_scenario
+                if st.session_state.active_scenario in scenario_names
+                else scenario_names[0]
+            )
+            baseline_name = st.selectbox(
+                "Baseline for deltas",
+                options=scenario_names,
+                index=scenario_names.index(default_baseline),
+            )
+
+            baseline_row = df.loc[df["Scenario"] == baseline_name].iloc[0]
+            for col in metric_cols:
+                df[f"Δ {col}"] = df[col] - float(baseline_row[col])
+
+            df_sorted = df.sort_values(by="Pay (annual)", ascending=False).reset_index(drop=True)
+
+            # Highlights (ensure long scenario names wrap cleanly)
+            best = df_sorted.iloc[0]
+            with st.container(border=True):
+                st.markdown("### Highlights")
+                h1, h2, h3 = st.columns(3, gap="large")
+                with h1:
+                    st.markdown(
+                        f"""
+                        <div style="font-size:0.85rem; opacity:0.75; margin-bottom:6px;">Top scenario (Pay annual)</div>
+                        <div style="font-size:0.95rem; font-weight:700; line-height:1.2; white-space:normal; word-break:break-word;">
+                            {best["Scenario"]}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                with h2:
+                    st.metric("Pay (annual)", _fmt_money(float(best["Pay (annual)"])))
+                with h3:
+                    st.metric("Pay (monthly)", _fmt_money(float(best["Pay (monthly)"])))
+
+            st.divider()
+
+            # Build display table with pre-formatted currency strings to avoid formatting errors
+            display_df = df_sorted.copy()
+            money_cols = metric_cols + [f"Δ {c}" for c in metric_cols]
+            for c in money_cols:
+                display_df[c] = display_df[c].apply(lambda v: _fmt_money_signed(float(v)))
+
+            column_config = {
+                "Scenario": st.column_config.TextColumn(width="large"),
+                "Active": st.column_config.CheckboxColumn(width="small"),
+                "Tax year": st.column_config.TextColumn(width="small"),
+                "Couple": st.column_config.CheckboxColumn(width="small"),
+                "Children": st.column_config.NumberColumn(width="small"),
+            }
+
+            for c in metric_cols:
+                column_config[c] = st.column_config.TextColumn(width="small")
+
+            for c in [f"Δ {x}" for x in metric_cols]:
+                column_config[c] = st.column_config.TextColumn(width="small")
+
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config=column_config,
+            )
+
+            with st.expander("Notes / definitions", expanded=False):
+                st.write(
+                    "This table compares the same metrics shown in the **Household dashboard** across saved scenarios. "
+                    "Deltas (Δ) are relative to the selected baseline scenario."
+                )
