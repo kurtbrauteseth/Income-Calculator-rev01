@@ -389,6 +389,7 @@ with st.sidebar:
                     if st.session_state.active_scenario == name:
                         st.session_state.active_scenario = None
                     del st.session_state.scenarios[name]
+                    st.session_state.scenarios = st.session_state.scenarios
                     st.rerun()
 
         st.divider()
@@ -620,11 +621,136 @@ with tab_calc:
 
     hh = st.session_state.household
     is_couple = bool(hh.get("is_couple", True))
+    dependant_children = int(hh.get("dependant_children", 0))
 
     pa = st.session_state.person_a
     pb = st.session_state.person_b
 
-    # Earned income (taxable approximation): OTE base (ex SG) + uplift
+    # -----------------------------
+    # Tax engine (minimal, backend-only; no UI changes)
+    # -----------------------------
+    def calc_income_tax_resident_annual(taxable_income: float) -> float:
+        """
+        Resident income tax (ex Medicare) using FY2025–26 Stage 3 rates.
+        No offsets (LITO etc) applied here.
+        """
+        x = max(0.0, float(taxable_income))
+        tax = 0.0
+
+        # Brackets:
+        # 0–18,200: 0%
+        # 18,201–45,000: 16%
+        # 45,001–135,000: 30%
+        # 135,001–190,000: 37%
+        # 190,001+: 45%
+        if x <= 18200:
+            tax = 0.0
+        elif x <= 45000:
+            tax = (x - 18200) * 0.16
+        elif x <= 135000:
+            tax = (45000 - 18200) * 0.16 + (x - 45000) * 0.30
+        elif x <= 190000:
+            tax = (45000 - 18200) * 0.16 + (135000 - 45000) * 0.30 + (x - 135000) * 0.37
+        else:
+            tax = (
+                (45000 - 18200) * 0.16
+                + (135000 - 45000) * 0.30
+                + (190000 - 135000) * 0.37
+                + (x - 190000) * 0.45
+            )
+        return max(0.0, tax)
+
+    def calc_medicare_levy_amount_from_income(income_for_thresholds: float, levy_base_income: float, lower: float, upper: float) -> float:
+        """
+        Medicare levy:
+        - 0 if income_for_thresholds <= lower
+        - phase-in: 10c per $1 above lower until upper (equivalent to 0.1*(income - lower))
+        - full: 2% of levy_base_income once income_for_thresholds >= upper
+        """
+        inc = max(0.0, float(income_for_thresholds))
+        base = max(0.0, float(levy_base_income))
+
+        if inc <= lower:
+            return 0.0
+
+        if inc < upper:
+            return max(0.0, 0.1 * (inc - lower))
+
+        return 0.02 * base
+
+    def calc_medicare_levy_split(
+        is_couple_local: bool,
+        children: int,
+        pa_taxable: float,
+        pb_taxable: float,
+        pa_rfb: float,
+        pb_rfb: float,
+        year_label: str,
+    ) -> Tuple[float, float]:
+        """
+        Family-aware Medicare levy (inputs-only approach):
+        - Uses low-income thresholds with dependent child increments.
+        - For couples, computes a family total levy then allocates by share of taxable income.
+        - Threshold tests use (taxable income + reportable fringe benefits).
+        """
+        # Thresholds (FY2025/26; applied to all year labels for now)
+        # Individuals: lower 27,222 ; upper 34,027
+        # Families:    lower 45,907 ; upper 57,383
+        # Child inc:   lower +4,216 ; upper +5,270
+        IND_LOWER = 27222.0
+        IND_UPPER = 34027.0
+        FAM_LOWER = 45907.0
+        FAM_UPPER = 57383.0
+        CHILD_INC_LOWER = 4216.0
+        CHILD_INC_UPPER = 5270.0
+
+        a_tax = max(0.0, float(pa_taxable))
+        b_tax = max(0.0, float(pb_taxable))
+        a_r = max(0.0, float(pa_rfb))
+        b_r = max(0.0, float(pb_rfb))
+
+        if not is_couple_local:
+            income_for_thresholds_a = a_tax + a_r
+            a_levy = calc_medicare_levy_amount_from_income(income_for_thresholds_a, a_tax, IND_LOWER, IND_UPPER)
+            return a_levy, 0.0
+
+        fam_lower = FAM_LOWER + CHILD_INC_LOWER * max(0, int(children))
+        fam_upper = FAM_UPPER + CHILD_INC_UPPER * max(0, int(children))
+
+        fam_income_for_thresholds = (a_tax + a_r) + (b_tax + b_r)
+        fam_taxable_base = a_tax + b_tax
+
+        total_levy = calc_medicare_levy_amount_from_income(
+            fam_income_for_thresholds,
+            fam_taxable_base,
+            fam_lower,
+            fam_upper,
+        )
+
+        if fam_taxable_base <= 0:
+            return 0.0, 0.0
+
+        a_share = a_tax / fam_taxable_base
+        b_share = b_tax / fam_taxable_base
+        return total_levy * a_share, total_levy * b_share
+
+    def calc_div293_tax(taxable_income: float, reportable_fringe_benefits: float, concessional_contributions: float) -> float:
+        """
+        Division 293 (inputs-only approximation):
+        Div293 income ≈ taxable income + reportable fringe benefits + concessional contributions
+        Tax = 15% of MIN(concessional contributions, excess over $250k)
+        """
+        threshold = 250000.0
+        ti = max(0.0, float(taxable_income))
+        rfb = max(0.0, float(reportable_fringe_benefits))
+        cc = max(0.0, float(concessional_contributions))
+        div293_income = ti + rfb + cc
+        excess = max(0.0, div293_income - threshold)
+        return 0.15 * min(cc, excess)
+
+    # -----------------------------
+    # Earnings + investment splits
+    # -----------------------------
     pa_base_ote = calc_base_ote_annual(
         _safe_float(pa.get("base_salary_annual", 0.0)),
         bool(pa.get("salary_includes_sg", False)),
@@ -646,13 +772,74 @@ with tab_calc:
 
     splits = _household_investment_splits(st.session_state.investments, is_couple=is_couple)
 
-    # Build "taxable income" from currently available inputs only:
     # taxable_income ~= earned_income (OTE + uplift) + net_taxable_investment_allocated
     pa_taxable_income = pa_earned_income + splits["a_net_taxable"]
     pb_taxable_income = pb_earned_income + splits["b_net_taxable"]
 
-    # Placeholder tax/super tax values (to be computed once tax engine is added)
-    ZERO = 0.0
+    # -----------------------------
+    # Super contributions + taxes
+    # -----------------------------
+    pa_sg = calc_sg_annual(
+        pa["base_salary_annual"],
+        bool(pa["salary_includes_sg"]),
+        pa_uplift,
+        bool(pa["uplift_sg_applies"]),
+    )
+    pb_sg = (
+        calc_sg_annual(
+            pb["base_salary_annual"],
+            bool(pb["salary_includes_sg"]),
+            pb_uplift,
+            bool(pb["uplift_sg_applies"]),
+        )
+        if is_couple
+        else 0.0
+    )
+
+    pa_extra_cc = _safe_float(pa.get("extra_concessional_annual", 0.0))
+    pb_extra_cc = _safe_float(pb.get("extra_concessional_annual", 0.0)) if is_couple else 0.0
+
+    pa_concessional_total = max(0.0, pa_sg + pa_extra_cc)
+    pb_concessional_total = max(0.0, pb_sg + pb_extra_cc) if is_couple else 0.0
+
+    # Non-concessional: no inputs yet, keep as 0 (calculated, not placeholder)
+    pa_non_concessional_total = 0.0
+    pb_non_concessional_total = 0.0
+
+    # Contributions tax (taken from super): 15% of concessional contributions (inputs-only)
+    pa_super_tax = 0.15 * pa_concessional_total
+    pb_super_tax = 0.15 * pb_concessional_total if is_couple else 0.0
+
+    # -----------------------------
+    # Personal taxes (income tax, Medicare levy, Div293)
+    # -----------------------------
+    pa_income_tax = calc_income_tax_resident_annual(pa_taxable_income)
+    pb_income_tax = calc_income_tax_resident_annual(pb_taxable_income) if is_couple else 0.0
+
+    pa_rfb = _safe_float(pa.get("reportable_fringe_benefits_annual", 0.0))
+    pb_rfb = _safe_float(pb.get("reportable_fringe_benefits_annual", 0.0)) if is_couple else 0.0
+
+    pa_medicare, pb_medicare = calc_medicare_levy_split(
+        is_couple_local=is_couple,
+        children=dependant_children,
+        pa_taxable=pa_taxable_income,
+        pb_taxable=pb_taxable_income,
+        pa_rfb=pa_rfb,
+        pb_rfb=pb_rfb,
+        year_label=str(hh.get("tax_year_label", "2025–26")),
+    )
+
+    pa_div293 = calc_div293_tax(pa_taxable_income, pa_rfb, pa_concessional_total)
+    pb_div293 = calc_div293_tax(pb_taxable_income, pb_rfb, pb_concessional_total) if is_couple else 0.0
+
+    # Total tax (as requested): income tax + Medicare levy + Div293 + super contributions tax
+    pa_total_tax = pa_income_tax + pa_medicare + pa_div293 + pa_super_tax
+    pb_total_tax = (pb_income_tax + pb_medicare + pb_div293 + pb_super_tax) if is_couple else 0.0
+
+    # Totals for household cards (no UI changes; values only)
+    household_earned_income = pa_earned_income + (pb_earned_income if is_couple else 0.0)
+    household_taxable_income = pa_taxable_income + (pb_taxable_income if is_couple else 0.0)
+    household_super_total = (pa_sg + pa_extra_cc) + ((pb_sg + pb_extra_cc) if is_couple else 0.0)
 
     colA, colB = st.columns(2, gap="large")
 
@@ -678,30 +865,25 @@ with tab_calc:
                 )
                 _render_section_rows(rows)
 
-            pa_sg = calc_sg_annual(
-                pa["base_salary_annual"],
-                bool(pa["salary_includes_sg"]),
-                pa_uplift,
-                bool(pa["uplift_sg_applies"]),
-            )
-            pa_super_total = pa_sg + _safe_float(pa.get("extra_concessional_annual", 0.0))
-
-            with st.expander(f"Superannuation  \u00a0\u00a0 **{_fmt_money(pa_super_total)}**", expanded=False):
+            with st.expander(
+                f"Superannuation  \u00a0\u00a0 **{_fmt_money(pa_concessional_total + pa_non_concessional_total)}**",
+                expanded=False,
+            ):
                 _render_section_rows(
                     [
                         ("Super Guarantee", _fmt_money(pa_sg)),
-                        ("Tax (taken from super)", _fmt_money(ZERO)),
-                        ("Concessional", _fmt_money(_safe_float(pa.get("extra_concessional_annual", 0.0)))),
-                        ("Non-concessional", _fmt_money(ZERO)),
+                        ("Tax (taken from super)", _fmt_money(pa_super_tax)),
+                        ("Concessional", _fmt_money(pa_concessional_total)),
+                        ("Non-concessional", _fmt_money(pa_non_concessional_total)),
                     ]
                 )
 
-            with st.expander(f"Tax  \u00a0\u00a0 **{_fmt_money(ZERO)}**", expanded=False):
+            with st.expander(f"Tax  \u00a0\u00a0 **{_fmt_money(pa_total_tax)}**", expanded=False):
                 _render_section_rows(
                     [
-                        ("Income tax", _fmt_money(ZERO)),
-                        ("Division 293 (additional tax on super)", _fmt_money(ZERO)),
-                        ("Medicare", _fmt_money(ZERO)),
+                        ("Income tax", _fmt_money(pa_income_tax)),
+                        ("Division 293 (additional tax on super)", _fmt_money(pa_div293)),
+                        ("Medicare", _fmt_money(pa_medicare)),
                     ]
                 )
 
@@ -728,30 +910,25 @@ with tab_calc:
                     )
                     _render_section_rows(rows)
 
-                pb_sg = calc_sg_annual(
-                    pb["base_salary_annual"],
-                    bool(pb["salary_includes_sg"]),
-                    pb_uplift,
-                    bool(pb["uplift_sg_applies"]),
-                )
-                pb_super_total = pb_sg + _safe_float(pb.get("extra_concessional_annual", 0.0))
-
-                with st.expander(f"Superannuation  \u00a0\u00a0 **{_fmt_money(pb_super_total)}**", expanded=False):
+                with st.expander(
+                    f"Superannuation  \u00a0\u00a0 **{_fmt_money(pb_concessional_total + pb_non_concessional_total)}**",
+                    expanded=False,
+                ):
                     _render_section_rows(
                         [
                             ("Super Guarantee", _fmt_money(pb_sg)),
-                            ("Tax (taken from super)", _fmt_money(ZERO)),
-                            ("Concessional", _fmt_money(_safe_float(pb.get("extra_concessional_annual", 0.0)))),
-                            ("Non-concessional", _fmt_money(ZERO)),
+                            ("Tax (taken from super)", _fmt_money(pb_super_tax)),
+                            ("Concessional", _fmt_money(pb_concessional_total)),
+                            ("Non-concessional", _fmt_money(pb_non_concessional_total)),
                         ]
                     )
 
-                with st.expander(f"Tax  \u00a0\u00a0 **{_fmt_money(ZERO)}**", expanded=False):
+                with st.expander(f"Tax  \u00a0\u00a0 **{_fmt_money(pb_total_tax)}**", expanded=False):
                     _render_section_rows(
                         [
-                            ("Income tax", _fmt_money(ZERO)),
-                            ("Division 293 (additional tax on super)", _fmt_money(ZERO)),
-                            ("Medicare", _fmt_money(ZERO)),
+                            ("Income tax", _fmt_money(pb_income_tax)),
+                            ("Division 293 (additional tax on super)", _fmt_money(pb_div293)),
+                            ("Medicare", _fmt_money(pb_medicare)),
                         ]
                     )
         else:
@@ -759,11 +936,7 @@ with tab_calc:
                 st.markdown("### Person B")
                 st.write("Not enabled (single mode).")
 
-    # Household key metrics (inputs-only, consistent with taxable income definitions above)
-    household_earned_income = pa_earned_income + (pb_earned_income if is_couple else 0.0)
-    household_taxable_income = pa_taxable_income + (pb_taxable_income if is_couple else 0.0)
-    household_super_total = pa_super_total + (pb_super_total if is_couple else 0.0)
-
+    # Household (values only; no UI changes)
     with st.container():
         _render_metric_card(
             "Household",
@@ -783,7 +956,7 @@ with tab_calc:
         [
             ("Earned income", "OTE base salary (ex SG) + remote uplift"),
             ("Taxable income (approx)", "Earned income plus net taxable investment position by owner allocation"),
-            ("Earned income after tax (before expenses)", "Not calculated yet (tax engine pending)"),
+            ("Earned income after tax (before expenses)", "Not shown here (use Tax sections above)"),
             ("Negative gearing benefit", "Not calculated yet (tax engine pending)"),
             ("Investment losses visibility", "Shows investment income and net taxable investment position by owner allocation"),
         ],
