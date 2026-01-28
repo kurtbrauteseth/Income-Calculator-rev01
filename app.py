@@ -893,6 +893,17 @@ with tab_calc:
     household_total_salary = pa_total_salary + (pb_total_salary if is_couple else 0.0)
     household_super_total = (pa_sg + pa_extra_cc) + ((pb_sg + pb_extra_cc) if is_couple else 0.0)
 
+    # After-tax earnings (before expenses), excluding tax on super
+    pa_after_tax_income = max(0.0, pa_total_salary - pa_total_tax)
+    pb_after_tax_income = max(0.0, pb_total_salary - pb_total_tax) if is_couple else 0.0
+
+    # Household Pay definition per request:
+    # Pay = Person A after-tax income + Person B after-tax income + gross investment income ("cash in")
+    household_pay = pa_after_tax_income + pb_after_tax_income + splits["gross_total"]
+
+    # Household negative gearing benefit (total)
+    household_ng_benefit = pa_ng_benefit + (pb_ng_benefit if is_couple else 0.0)
+
     colA, colB = st.columns(2, gap="large")
 
     with colA:
@@ -993,26 +1004,26 @@ with tab_calc:
 with tab_household:
     st.markdown("## Household dashboard")
 
-    # KPIs (individual taxable income + negative gearing benefit as requested)
+    # Dashboard KPIs (Taxable income removed as requested)
     row1 = st.columns(4)
     with row1[0]:
-        st.metric("Total salary", _fmt_money(household_total_salary))
+        st.metric("Pay", _fmt_money(household_pay))
     with row1[1]:
-        st.metric("Gross investments", _fmt_money(splits["gross_total"]))
+        st.metric("Total salary", _fmt_money(household_total_salary))
     with row1[2]:
-        st.metric("Net investments", _fmt_money(splits["net_taxable_total"]))
+        st.metric("Gross investments", _fmt_money(splits["gross_total"]))
     with row1[3]:
         st.metric("Total super", _fmt_money(household_super_total))
 
     row2 = st.columns(4)
     with row2[0]:
-        st.metric("Taxable income (Person A)", _fmt_money(pa_taxable_income))
+        st.metric("Negative gearing benefit (household)", _fmt_money(household_ng_benefit))
     with row2[1]:
-        st.metric("Taxable income (Person B)", _fmt_money(pb_taxable_income) if is_couple else "—")
+        st.metric("After-tax income (A)", _fmt_money(pa_after_tax_income))
     with row2[2]:
-        st.metric("Negative gearing benefit (A)", _fmt_money(pa_ng_benefit))
+        st.metric("After-tax income (B)", _fmt_money(pb_after_tax_income) if is_couple else "—")
     with row2[3]:
-        st.metric("Negative gearing benefit (B)", _fmt_money(pb_ng_benefit) if is_couple else "—")
+        st.metric("Net investments", _fmt_money(splits["net_taxable_total"]))
 
     st.divider()
 
