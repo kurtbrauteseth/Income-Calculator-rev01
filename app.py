@@ -384,7 +384,7 @@ with st.sidebar:
     if st.session_state.scenarios:
         st.markdown("**Your scenarios**")
         for name in sorted(st.session_state.scenarios.keys()):
-            is_active = (name == st.session_state.active_scenario)
+            is_active = name == st.session_state.active_scenario
 
             row_l, row_r = st.columns([0.82, 0.18])
             with row_l:
@@ -409,7 +409,9 @@ with st.sidebar:
                 st.success("Saved")
 
 # Top tabs (Inputs first)
-tab_inputs, tab_calc, tab_household, tab_summary = st.tabs(["Inputs", "Income calculator", "Household dashboard", "Scenario summary"])
+tab_inputs, tab_calc, tab_household, tab_summary = st.tabs(
+    ["Inputs", "Income calculator", "Household dashboard", "Scenario summary"]
+)
 
 with tab_inputs:
     st.title("Inputs")
@@ -895,8 +897,8 @@ with tab_calc:
     household_super_total = (pa_sg + pa_extra_cc) + ((pb_sg + pb_extra_cc) if is_couple else 0.0)
 
     # After-tax earnings (before expenses), excluding tax on super
-    pa_after_tax_income = max(0.0, pa_total_salary - pa_total_tax)
-    pb_after_tax_income = max(0.0, pb_total_salary - pb_total_tax) if is_couple else 0.0
+    pa_after_tax_income = max(0.0, pa_total_salary + pa_rfb - pa_total_tax)
+    pb_after_tax_income = max(0.0, pb_total_salary + pb_rfb - pb_total_tax) if is_couple else 0.0
 
     # Household Pay definition:
     # Pay = Person A after-tax income + Person B after-tax income + gross investment income ("cash in")
@@ -922,6 +924,7 @@ with tab_calc:
                 rows.extend(
                     [
                         ("Uplift", _fmt_money(pa_uplift)),
+                        ("Allowance (RFB)", _fmt_money(pa_rfb)),
                         ("Total salary", _fmt_money(pa_total_salary)),
                         ("Investment income", _fmt_money(splits["a_gross"])),
                         ("Net investment income", _fmt_money(splits["a_net_taxable"])),
@@ -968,6 +971,7 @@ with tab_calc:
                     rows.extend(
                         [
                             ("Uplift", _fmt_money(pb_uplift)),
+                            ("Allowance (RFB)", _fmt_money(pb_rfb)),
                             ("Total salary", _fmt_money(pb_total_salary)),
                             ("Investment income", _fmt_money(splits["b_gross"])),
                             ("Net investment income", _fmt_money(splits["b_net_taxable"])),
@@ -1063,11 +1067,9 @@ with tab_summary:
             background: #FFF7E6 !important;
         }
         </style>
-        """
-        ,
+        """,
         unsafe_allow_html=True,
     )
-
 
     if not st.session_state.scenarios:
         st.info("No saved scenarios yet. Add a scenario from the sidebar to see comparisons here.")
@@ -1165,7 +1167,9 @@ with tab_summary:
                 b_share = b_tax / fam_taxable_base
                 return total_levy * a_share, total_levy * b_share
 
-            def calc_div293_tax_local(taxable_income: float, reportable_fringe_benefits: float, concessional_contributions: float) -> float:
+            def calc_div293_tax_local(
+                taxable_income: float, reportable_fringe_benefits: float, concessional_contributions: float
+            ) -> float:
                 threshold = 250000.0
                 ti = max(0.0, float(taxable_income))
                 rfb = max(0.0, float(reportable_fringe_benefits))
@@ -1253,7 +1257,9 @@ with tab_summary:
                 )
 
                 pa_div293_inner = calc_div293_tax_local(pa_taxable, pa_rfb_local, pa_concessional_total_local)
-                pb_div293_inner = calc_div293_tax_local(pb_taxable, pb_rfb_local, pb_concessional_total_local) if is_couple_local else 0.0
+                pb_div293_inner = (
+                    calc_div293_tax_local(pb_taxable, pb_rfb_local, pb_concessional_total_local) if is_couple_local else 0.0
+                )
 
                 return (
                     pa_income_tax_inner,
@@ -1307,8 +1313,10 @@ with tab_summary:
                 (pb_sg_local + pb_extra_cc_local) if is_couple_local else 0.0
             )
 
-            pa_after_tax_income_local = max(0.0, pa_total_salary_local - pa_total_tax_local)
-            pb_after_tax_income_local = max(0.0, pb_total_salary_local - pb_total_tax_local) if is_couple_local else 0.0
+            pa_after_tax_income_local = max(0.0, pa_total_salary_local + pa_rfb_local - pa_total_tax_local)
+            pb_after_tax_income_local = (
+                max(0.0, pb_total_salary_local + pb_rfb_local - pb_total_tax_local) if is_couple_local else 0.0
+            )
 
             household_after_tax_income_local = pa_after_tax_income_local + (
                 pb_after_tax_income_local if is_couple_local else 0.0
@@ -1353,7 +1361,7 @@ with tab_summary:
             records.append(
                 {
                     "Scenario": name,
-                    "Active": (name == st.session_state.active_scenario),
+                    "Active": name == st.session_state.active_scenario,
                     "Tax year": str(payload.get("household", {}).get("tax_year_label", "")),
                     "Couple": bool(payload.get("household", {}).get("is_couple", True)),
                     "Children": int(payload.get("household", {}).get("dependant_children", 0)),
@@ -1368,9 +1376,7 @@ with tab_summary:
         else:
             scenario_names = df["Scenario"].tolist()
             default_baseline = (
-                st.session_state.active_scenario
-                if st.session_state.active_scenario in scenario_names
-                else scenario_names[0]
+                st.session_state.active_scenario if st.session_state.active_scenario in scenario_names else scenario_names[0]
             )
             baseline_name = st.selectbox(
                 "Baseline for deltas",
